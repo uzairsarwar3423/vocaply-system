@@ -1,0 +1,475 @@
+Day 19 — Commitments API
+
+Theme: The Core Feature — Accountability Engine
+
+
+Yeh Vocaply ka heart hai. Commitments extract hote hain, track hote hain,
+aur automatically MISSED mark hote hain. Aaj pura commitments API complete
+hoga: list with 10+ filters, single detail, status update with side effects,
+stats, score calculation. Yeh sab production-grade hona chahiye.
+
+
+
+
+Work Hours Breakdown (8 Hours)
+
+9:00 AM – 10:30 AM  → commitments.repository.ts (complex queries)
+10:30 AM – 12:00 PM → commitments.service.ts — list, my, detail
+12:00 PM – 1:00 PM  → Lunch break
+1:00 PM – 2:00 PM   → commitments.service.ts — updateStatus (FULFILLED/DEFERRED/CANCELLED)
+2:00 PM – 3:00 PM   → commitment score algorithm (score.service.ts)
+3:00 PM – 4:00 PM   → commitments.service.ts — stats endpoint
+4:00 PM – 5:00 PM   → commitments.controller.ts + routes
+5:00 PM – 5:30 PM   → deadline.worker.ts (cron logic — mark MISSED daily)
+5:30 PM – 6:00 PM   → Postman test + checklist
+
+
+APIs to Build (6 Endpoints)
+
+GET /api/v1/commitments — List with Advanced Filters
+
+Auth: Required + injectTenant
+
+Query Params (10+ filters):
+
+?status=PENDING              → exact match
+?status[in]=PENDING,MISSED   → multiple statuses
+?ownerId=usr_01              → by team member
+?meetingId=mtg_01            → from specific meeting
+?overdue=true                → PENDING past due date
+?from=2026-05-01&to=2026-05-31
+?search=login feature         → text search
+?confidenceScore[gte]=0.7    → minimum confidence
+?limit=20&cursor=cursor_abc
+?sortBy=dueDate&sortOrder=asc
+
+Service Logic (listCommitments):
+
+1. Parse all filter params with validation
+2. Build Prisma WHERE clause:
+     teamId (always present — tenant isolation)
+     status: exact or IN array
+     ownerId: if provided
+     meetingId: if provided
+     overdue: { dueDate: { lt: new Date() }, status: 'PENDING' }
+     from/to: createdAt date range
+     search: text ILIKE '%search%'
+     confidenceScore: gte filter
+3. Build ORDER BY:
+     default: MISSED first, then PENDING by dueDate ASC, then others by createdAt DESC
+     custom: sortBy + sortOrder params
+4. Cursor pagination (limit+1)
+5. Return with counts in meta: { PENDING: 7, FULFILLED: 12, MISSED: 3, DEFERRED: 1 }
+
+Response includes per-commitment:
+
+json{
+  "id":            "com_01",
+  "text":          "I'll finish the login feature by Thursday",
+  "status":        "MISSED",
+  "dueDate":       "2026-05-09T23:59:59Z",
+  "dueDateRaw":    "by Thursday",
+  "daysOverdue":   2,
+  "confidenceScore": 0.95,
+  "owner": {
+    "id":        "usr_02",
+    "name":      "Ahmed Hassan",
+    "avatarUrl": "https://...",
+    "commitmentScore": 72
+  },
+  "meeting": {
+    "id":          "mtg_01",
+    "title":       "Monday Standup",
+    "scheduledAt": "2026-05-06T09:00:00Z"
+  },
+  "createdAt": "2026-05-06T09:32:00Z"
+}
+
+
+GET /api/v1/commitments/my — Current User's Own Commitments
+
+Auth: Required + injectTenant
+
+Same as list but always filtered to req.user.id. Returns personal summary in meta:
+
+json"meta": {
+  "summary": { "pending": 3, "overdue": 1, "fulfilled": 4, "missed": 0 }
+}
+
+
+GET /api/v1/commitments/stats — Team Statistics
+
+Auth: Required + injectTenant + requireRole('MANAGER')
+
+Query Params: ?from=2026-05-01&to=2026-05-31
+
+Service Logic:
+
+1. Aggregate stats for the period:
+     total, fulfilled, missed, pending, deferred
+     fulfillmentRate = fulfilled / (fulfilled + missed) × 100
+     avgDaysOverdue
+2. Per-member breakdown (sorted by fulfillmentRate desc):
+     Each member: total, fulfilled, missed, fulfillmentRate, score, trend
+3. Weekly trend data (7 data points):
+     { week: "2026-W18", fulfillmentRate: 75, label: "May 1-7" }
+
+Response:
+
+json{
+  "period":    { "from": "2026-05-01", "to": "2026-05-31" },
+  "team": {
+    "total":           45,
+    "fulfilled":       30,
+    "missed":           8,
+    "pending":          7,
+    "fulfillmentRate": 79,
+    "avgDaysOverdue":   1.5
+  },
+  "byMember": [
+    {
+      "userId":          "usr_01",
+      "name":            "Ali Raza",
+      "fulfillmentRate": 92,
+      "score":           92,
+      "trend":           "improving"
+    }
+  ],
+  "trend": [
+    { "week": "2026-W18", "fulfillmentRate": 75, "label": "May 1-7" }
+  ]
+}
+
+
+GET /api/v1/commitments/:commitmentId — Single Commitment Detail
+
+Auth: Required + injectTenant
+
+Returns full detail including resolvedInMeeting relation.
+
+
+PATCH /api/v1/commitments/:commitmentId/status — Update Status
+
+Auth: Required + injectTenant
+Authorization: MEMBER can only update own commitments; MANAGER+ can update any
+
+Request Body:
+
+json{
+  "status":     "FULFILLED",
+  "note":       "Merged PR #142 before deadline",
+  "newDueDate": "2026-05-20T23:59:59Z"   // Required when status = DEFERRED
+}
+
+Allowed transitions:
+
+
+PENDING → FULFILLED
+PENDING → DEFERRED (requires newDueDate)
+PENDING → CANCELLED (requires note)
+DEFERRED → FULFILLED
+DEFERRED → CANCELLED
+
+
+Cannot set: PENDING or MISSED (system-managed)
+
+Service Logic (updateCommitmentStatus):
+
+1. Load commitment, verify teamId match
+2. MEMBER check: if role='MEMBER' && commitment.ownerId !== req.user.id → 403
+3. Validate transition: status must be in ALLOWED_TRANSITIONS[current.status]
+4. If DEFERRED: newDueDate required and must be future
+5. If CANCELLED: note required
+6. prisma.$transaction:
+     a. Update commitment status + resolvedAt + extra fields
+     b. Increment deferredCount if DEFERRED
+     c. Set originalDueDate if first deferral
+7. Recalculate owner's commitment score (score.service.ts)
+8. Update user.commitmentScore in DB
+9. Emit Socket.io events:
+     → team room: 'commitment:fulfilled' or 'commitment:deferred'
+     → user room: 'my:score_updated' (if score changed)
+10. If FULFILLED + Jira linked: queue integrate job to mark Jira Done
+11. Return updated commitment
+
+
+score.service.ts — Commitment Score Algorithm
+
+File: services/api/src/services/score.service.ts
+
+typescriptexport async function calculateCommitmentScore(
+  userId: string,
+  teamId: string
+): Promise<{
+  score:           number
+  fulfillmentRate: number
+  onTimeRate:      number
+  trend:           'improving' | 'stable' | 'declining'
+}> {
+  const since = subDays(new Date(), 30)
+
+  const commitments = await prisma.commitment.findMany({
+    where: {
+      ownerId:        userId,
+      teamId,
+      createdAt:      { gte: since },
+      status:         { in: ['FULFILLED', 'MISSED', 'PENDING'] },
+      confidenceScore: { gte: 0.5 },
+    },
+  })
+
+  if (commitments.length === 0) return { score: 0, fulfillmentRate: 0, onTimeRate: 0, trend: 'stable' }
+
+  const fulfilled = commitments.filter((c) => c.status === 'FULFILLED').length
+  const missed    = commitments.filter((c) => c.status === 'MISSED').length
+  const decided   = fulfilled + missed
+
+  // Base fulfillment rate (excludes pending)
+  const baseFulfillmentRate = decided === 0 ? 100 : Math.round((fulfilled / decided) * 100)
+
+  // Recency weighting: last 7 days = full weight, older = 70%
+  const recentCutoff    = subDays(new Date(), 7)
+  const recentFulfilled = commitments.filter((c) => c.status === 'FULFILLED' && c.createdAt >= recentCutoff).length
+  const recentDecided   = commitments.filter((c) => ['FULFILLED','MISSED'].includes(c.status) && c.createdAt >= recentCutoff).length
+  const olderFulfilled  = fulfilled - recentFulfilled
+  const olderDecided    = decided - recentDecided
+
+  let weightedRate = 100
+  if (decided > 0) {
+    const rw = recentDecided > 0 ? (recentFulfilled / recentDecided) * 1.0 * recentDecided : 0
+    const ow = olderDecided  > 0 ? (olderFulfilled  / olderDecided)  * 0.7 * olderDecided  : 0
+    const tw = recentDecided * 1.0 + olderDecided * 0.7
+    weightedRate = tw > 0 ? ((rw + ow) / tw) * 100 : 100
+  }
+
+  // On-time bonus: up to +10 points
+  const onTimeFulfilled = commitments.filter(
+    (c) => c.status === 'FULFILLED' && c.resolvedAt && c.dueDate && c.resolvedAt <= c.dueDate
+  ).length
+  const onTimeRate  = fulfilled === 0 ? 100 : Math.round((onTimeFulfilled / fulfilled) * 100)
+  const onTimeBonus = (onTimeRate / 100) * 10
+
+  const score = Math.min(100, Math.max(0, Math.round(weightedRate + onTimeBonus)))
+
+  // Trend
+  const trend = await calculateScoreTrend(userId, teamId)
+
+  return { score, fulfillmentRate: baseFulfillmentRate, onTimeRate, trend }
+}
+
+async function calculateScoreTrend(userId: string, teamId: string): Promise<'improving' | 'stable' | 'declining'> {
+  // Compare this week's rate vs last week's rate
+  const thisWeekStart  = subDays(new Date(), 7)
+  const priorWeekStart = subDays(new Date(), 14)
+
+  const thisWeek  = await getWeekRate(userId, teamId, thisWeekStart,  new Date())
+  const priorWeek = await getWeekRate(userId, teamId, priorWeekStart, thisWeekStart)
+
+  const diff = thisWeek - priorWeek
+  if (diff > 5)  return 'improving'
+  if (diff < -5) return 'declining'
+  return 'stable'
+}
+
+
+deadline.worker.ts — Auto-Mark MISSED (Daily Cron)
+
+File: services/api/src/queues/workers/deadline.worker.ts
+
+typescript// This worker runs two cron jobs:
+//   1. 9 AM UTC daily  → Send deadline reminders
+//   2. 6 PM UTC daily  → Mark overdue PENDING commitments as MISSED
+
+// Register cron jobs in scheduler.ts:
+
+export async function runDeadlineReminders(): Promise<void> {
+  const tomorrow = addDays(new Date(), 1)
+  tomorrow.setUTCHours(23, 59, 59, 999)
+  const now = new Date()
+
+  // Find PENDING commitments due within 24 hours, reminder not yet sent
+  const commitments = await prisma.commitment.findMany({
+    where: {
+      status:         'PENDING',
+      dueDate:        { gte: now, lte: tomorrow },
+      reminderSentAt: null,
+    },
+    include: {
+      owner: { select: { id: true, name: true, email: true } },
+      team:  { select: { id: true, plan: true } },
+    },
+    take: 500,  // Batch of 500
+  })
+
+  for (const c of commitments) {
+    if (c.team.plan === 'FREE') continue  // Notifications = paid feature
+
+    // Dedup check
+    const dedupKey = `notif:dedup:DEADLINE_REMINDER:${c.owner.id}:${c.id}`
+    if (await redis.exists(dedupKey)) continue
+
+    // Queue notification + mark reminder sent
+    await notifyQueue.add('deadline-reminder', {
+      type:         'DEADLINE_REMINDER',
+      teamId:       c.teamId,
+      commitmentId: c.id,
+      ownerId:      c.owner.id,
+    })
+    await prisma.commitment.update({
+      where: { id: c.id },
+      data:  { reminderSentAt: new Date() },
+    })
+    await redis.setex(dedupKey, 86400, '1')
+  }
+}
+
+export async function markMissedCommitments(): Promise<void> {
+  // Find PENDING commitments past their due date, not yet alerted
+  const overdue = await prisma.commitment.findMany({
+    where: {
+      status:             'PENDING',
+      dueDate:            { lt: new Date() },
+      missedAlertSentAt:  null,
+    },
+    include: {
+      owner: true,
+      team:  { include: { members: { where: { role: { in: ['MANAGER','ADMIN','OWNER'] } } } } },
+    },
+    take: 500,
+  })
+
+  if (overdue.length === 0) return
+
+  // Batch update all to MISSED
+  const ids = overdue.map((c) => c.id)
+  await prisma.commitment.updateMany({
+    where: { id: { in: ids } },
+    data:  { status: 'MISSED', missedAlertSentAt: new Date() },
+  })
+
+  // Per-commitment: emit Socket.io + queue notification + recalculate score
+  const { getIO } = await import('../realtime/socket.server')
+  const io = getIO()
+
+  for (const c of overdue) {
+    io?.to(`team:${c.teamId}`).emit('commitment:missed', {
+      commitmentId: c.id,
+      ownerName:    c.owner.name,
+    })
+    io?.to(`user:${c.ownerId}`).emit('my:commitment_missed', {
+      commitmentId: c.id,
+      text:         c.text,
+    })
+
+    await notifyQueue.add('commitment-missed', {
+      type:        'COMMITMENT_MISSED',
+      teamId:      c.teamId,
+      commitmentId: c.id,
+      ownerId:     c.ownerId,
+      managerIds:  c.team.members.map((m) => m.id),
+    })
+
+    // Recalculate score
+    const newScore = await calculateCommitmentScore(c.ownerId, c.teamId)
+    await prisma.user.update({
+      where: { id: c.ownerId },
+      data:  { commitmentScore: newScore.score },
+    })
+    io?.to(`team:${c.teamId}`).emit('member:score_updated', {
+      userId:   c.ownerId,
+      newScore: newScore.score,
+    })
+  }
+}
+
+
+scheduler.ts — Cron Job Registration
+
+File: services/api/src/queues/scheduler.ts
+
+typescriptimport cron from 'node-cron'
+import { logger } from '../config/logger'
+
+export function startScheduler(): void {
+  // 9:00 AM UTC daily — deadline reminders
+  cron.schedule('0 9 * * *', async () => {
+    logger.info('Cron: running deadline reminders')
+    try {
+      await runDeadlineReminders()
+    } catch (err) {
+      logger.error({ err }, 'Cron: deadline reminders failed')
+    }
+  })
+
+  // 6:00 PM UTC daily — mark missed commitments
+  cron.schedule('0 18 * * *', async () => {
+    logger.info('Cron: marking missed commitments')
+    try {
+      await markMissedCommitments()
+    } catch (err) {
+      logger.error({ err }, 'Cron: mark missed failed')
+    }
+  })
+
+  // Monday 9:00 AM UTC — weekly digest
+  cron.schedule('0 9 * * 1', async () => {
+    logger.info('Cron: sending weekly digest')
+    // Full implementation: Day 18 notify.worker
+  })
+
+  logger.info('Scheduler started: deadline-reminder@9AM, mark-missed@6PM, digest@Mon9AM')
+}
+
+
+Files to Create
+
+services/api/src/modules/commitments/commitments.repository.ts
+services/api/src/modules/commitments/commitments.service.ts
+services/api/src/modules/commitments/commitments.controller.ts
+services/api/src/modules/commitments/commitments.validator.ts
+services/api/src/modules/commitments/commitments.routes.ts
+services/api/src/modules/commitments/commitments.types.ts
+services/api/src/services/score.service.ts
+services/api/src/queues/workers/deadline.worker.ts    ← FILLED IN
+services/api/src/queues/scheduler.ts
+
+
+Day 19 End-of-Day Checklist
+
+LIST COMMITMENTS:
+  [ ] GET /commitments → paginated list
+  [ ] ?status=MISSED filter works
+  [ ] ?status[in]=PENDING,MISSED multi-status works
+  [ ] ?overdue=true returns only PENDING past due date
+  [ ] ?search=login case-insensitive text search
+  [ ] ?ownerId=usr_01 filters by member
+  [ ] Meta includes counts: { PENDING: N, FULFILLED: N, MISSED: N }
+
+MY COMMITMENTS:
+  [ ] GET /commitments/my → only current user's commitments
+  [ ] Meta includes personal summary
+
+STATS:
+  [ ] GET /commitments/stats → team fulfillmentRate + byMember array
+  [ ] MEMBER role → 403 (requireRole MANAGER)
+  [ ] Date range filter works
+
+STATUS UPDATE:
+  [ ] PATCH /commitments/:id/status { status: "FULFILLED" } → 200
+  [ ] Owner's commitmentScore updated in DB
+  [ ] Socket.io event emitted: commitment:fulfilled
+  [ ] MEMBER updating another user's commitment → 403
+  [ ] DEFERRED without newDueDate → 422
+  [ ] CANCELLED without note → 422
+
+SCORE ALGORITHM:
+  [ ] calculateCommitmentScore(userId, teamId) returns 0-100
+  [ ] Perfect record → score ~100
+  [ ] All missed → score ~0
+  [ ] Recent improvements weighted higher than old misses
+
+DEADLINE CRON:
+  [ ] markMissedCommitments() runs: PENDING + past due → MISSED in DB
+  [ ] missedAlertSentAt set (prevents duplicate alerts)
+  [ ] Socket.io commitment:missed event emitted
+  [ ] notify queue job created

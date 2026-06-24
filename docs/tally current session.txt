@@ -1,0 +1,2408 @@
+Vocaply — Full API Architecture & Parameters
+
+Base URL: https://api.vocaply.com/api/v1
+Auth: Custom JWT (Bearer token) — except public + webhook routes
+Content-Type: application/json
+Version: v1
+
+
+Table of Contents
+
+API Standards & Conventions
+Auth APIs
+Team APIs
+Meeting APIs
+Commitment APIs
+Action Item APIs
+Analytics APIs
+Integration APIs
+Billing APIs
+Notification APIs
+Webhook APIs
+Complete API Summary Table
+
+
+1. API Standards & Conventions
+Request Headers
+Authorization: Bearer <access_token>      ← Required on all protected routes
+Content-Type:  application/json           ← Always
+Accept:        application/json           ← Always
+Standard Success Response
+json{
+  "success": true,
+  "data": { },
+  "meta": {
+    "page": 1,
+    "limit": 20,
+    "total": 150,
+    "hasMore": true
+  }
+}
+Standard Error Response
+json{
+  "success": false,
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Meeting not found",
+    "details": {
+      "field": "meetingId",
+      "value": "mtg_invalid"
+    }
+  }
+}
+HTTP Status Codes Used
+200  OK              → Success (GET, PATCH, DELETE)
+201  Created         → Resource created (POST)
+400  Bad Request     → Malformed request body
+401  Unauthorized    → Missing or invalid token
+402  Payment Req     → Plan limit reached
+403  Forbidden       → Valid token but insufficient role
+404  Not Found       → Resource not found
+409  Conflict        → Duplicate resource
+422  Unprocessable   → Validation failed (field errors)
+429  Too Many Req    → Rate limit exceeded
+500  Server Error    → Unexpected error
+502  Bad Gateway     → Third-party integration failed
+Error Codes
+AUTH_REQUIRED        401  → No token provided
+TOKEN_EXPIRED        401  → Access token expired
+TOKEN_INVALID        401  → Malformed or tampered token
+FORBIDDEN            403  → Valid token, wrong role
+NOT_FOUND            404  → Resource does not exist
+VALIDATION_ERROR     422  → Invalid input fields
+DUPLICATE            409  → Already exists
+PLAN_LIMIT           402  → Exceeded plan quota
+ACCOUNT_LOCKED       429  → Too many failed login attempts
+RATE_LIMITED         429  → API rate limit hit
+INTEGRATION_ERROR    502  → Jira, Slack, etc. API failed
+INTERNAL_ERROR       500  → Unexpected server error
+Pagination Query Params
+?page=1              → Page number (default: 1, min: 1)
+?limit=20            → Items per page (default: 20, max: 100)
+?sortBy=createdAt    → Sort field
+?sortOrder=desc      → Sort direction: asc | desc
+Date Format
+All dates:   ISO 8601 → "2026-05-12T09:00:00Z"
+Date only:   "2026-05-12"
+All times:   UTC timezone
+
+2. Auth APIs
+POST /auth/register
+Register new user with email and password.
+Auth:   Public (no token required)
+
+Request Body:
+{
+  "name":     string   REQUIRED  min:2  max:100
+              → Full name of the user
+              → Example: "Ali Raza"
+
+  "email":    string   REQUIRED
+              → Valid email address, will be lowercased
+              → Must be unique in the system
+              → Example: "ali@techflow.com"
+
+  "password": string   REQUIRED  min:8  max:128
+              → Must contain: uppercase letter, number, special char
+              → Example: "MyPass@123"
+}
+
+Success Response 201:
+{
+  "success": true,
+  "data": {
+    "message": "Registration successful. Check your email to verify your account.",
+    "email": "ali@techflow.com"
+  }
+}
+
+Error Responses:
+  409 DUPLICATE       → Email already registered
+  422 VALIDATION_ERROR → Invalid email, weak password
+    {
+      "error": {
+        "code": "VALIDATION_ERROR",
+        "message": "Validation failed",
+        "details": {
+          "fields": {
+            "password": "Password must contain at least one uppercase letter",
+            "email": "Invalid email format"
+          }
+        }
+      }
+    }
+
+POST /auth/login
+Login with email and password.
+Auth:   Public
+
+Request Body:
+{
+  "email":    string   REQUIRED
+              → Registered email address
+
+  "password": string   REQUIRED
+              → Account password
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "user": {
+      "id":        "usr_clx01abc",
+      "name":      "Ali Raza",
+      "email":     "ali@techflow.com",
+      "avatarUrl": "https://...",
+      "timezone":  "Asia/Karachi",
+      "role":      "MANAGER",
+      "team": {
+        "id":   "team_clx02xyz",
+        "name": "TechFlow Engineering",
+        "slug": "techflow-eng",
+        "plan": "GROWTH"
+      },
+      "createdAt": "2026-01-15T09:00:00Z"
+    }
+  }
+}
+
+Side Effect:
+  → HttpOnly cookie set: vocaply_refresh=<refresh_token>
+    Secure: true, SameSite: Strict, Path: /auth/refresh
+    Expires: 30 days from now
+
+Error Responses:
+  401 → Invalid email or password (generic, never reveal which)
+  403 → Email not verified
+    { "error": { "code": "EMAIL_NOT_VERIFIED", "message": "Please verify your email" } }
+  429 → Account locked (too many failed attempts)
+    { "error": { "code": "ACCOUNT_LOCKED", "message": "Account locked for 15 minutes" } }
+
+POST /auth/logout
+Logout and invalidate refresh token.
+Auth:   Required
+
+Request Body: none
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "message": "Logged out successfully"
+  }
+}
+
+Side Effect:
+  → Refresh token deleted from database
+  → HttpOnly cookie cleared
+
+Error Responses:
+  401 → No valid session found
+
+POST /auth/refresh
+Get new access token using refresh token from cookie.
+Auth:   Public (uses HttpOnly cookie)
+
+Request Body: none
+
+Cookies required:
+  vocaply_refresh=<refresh_token>   ← Sent automatically by browser
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  }
+}
+
+Side Effect:
+  → Old refresh token deleted from DB
+  → New refresh token issued → new HttpOnly cookie set
+  → Token rotation happens automatically
+
+Error Responses:
+  401 → Refresh token missing, invalid, or expired
+        → Frontend must redirect to /login
+
+GET /auth/verify-email
+Verify email with token from email link.
+Auth:   Public
+
+Query Parameters:
+  token   string   REQUIRED
+          → The verification token from the email link
+          → Example: ?token=abc123def456...
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "user": { ...user object with team },
+    "message": "Email verified successfully"
+  }
+}
+
+Side Effect:
+  → user.emailVerified set to true
+  → Verification token deleted (one-time use)
+  → New access + refresh tokens issued (auto-login)
+
+Error Responses:
+  400 → Token invalid or already used
+  410 → Token expired (resend available)
+
+POST /auth/resend-verification
+Resend verification email.
+Auth:   Public
+
+Request Body:
+{
+  "email": string   REQUIRED
+           → The email to resend verification to
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "message": "Verification email sent if account exists"
+  }
+}
+
+Note: Always returns 200 even if email not found (security)
+Rate limit: 1 resend per 60 seconds per email
+
+POST /auth/forgot-password
+Request a password reset email.
+Auth:   Public
+
+Request Body:
+{
+  "email": string   REQUIRED
+           → Email address of the account
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "message": "If that email exists, a reset link has been sent"
+  }
+}
+
+Note: Always returns 200 even if email not found (security)
+Rate limit: 3 requests per hour per email
+
+POST /auth/reset-password
+Set new password using reset token.
+Auth:   Public
+
+Request Body:
+{
+  "token":       string   REQUIRED
+                 → Reset token from the email link
+
+  "newPassword": string   REQUIRED  min:8  max:128
+                 → New password (same strength rules as register)
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "user": { ...user object },
+    "message": "Password reset successful"
+  }
+}
+
+Side Effect:
+  → password_hash updated in DB
+  → Reset token marked as used (one-time)
+  → ALL existing refresh tokens for this user invalidated
+  → New session issued (auto-login)
+
+Error Responses:
+  400 → Token invalid or already used
+  410 → Token expired (request new reset)
+  422 → Password too weak
+
+GET /auth/me
+Get current authenticated user.
+Auth:   Required
+
+Request Body: none
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "id":        "usr_clx01abc",
+    "name":      "Ali Raza",
+    "email":     "ali@techflow.com",
+    "avatarUrl": "https://lh3.googleusercontent.com/...",
+    "timezone":  "Asia/Karachi",
+    "role":      "MANAGER",
+    "emailVerified": true,
+    "hasPassword":   true,
+    "hasGoogleAuth": true,
+    "hasGithubAuth": false,
+    "team": {
+      "id":           "team_clx02xyz",
+      "name":         "TechFlow Engineering",
+      "slug":         "techflow-eng",
+      "plan":         "GROWTH",
+      "memberCount":  5
+    },
+    "createdAt":  "2026-01-15T09:00:00Z",
+    "lastLoginAt":"2026-05-12T08:30:00Z"
+  }
+}
+
+PATCH /auth/me
+Update current user profile.
+Auth:   Required
+
+Request Body (all fields optional):
+{
+  "name":      string   optional   min:2  max:100
+               → Update display name
+
+  "timezone":  string   optional
+               → IANA timezone string
+               → Example: "Asia/Karachi", "America/New_York", "UTC"
+
+  "avatarUrl": string   optional   must be valid URL
+               → Profile picture URL
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "id":        "usr_clx01abc",
+    "name":      "Ali Raza Updated",
+    "timezone":  "America/New_York",
+    "avatarUrl": "https://...",
+    "updatedAt": "2026-05-12T10:00:00Z"
+  }
+}
+
+POST /auth/change-password
+Change password (requires current password).
+Auth:   Required
+
+Request Body:
+{
+  "currentPassword": string   REQUIRED
+                     → Current account password (for verification)
+
+  "newPassword":     string   REQUIRED  min:8  max:128
+                     → New password (same strength rules)
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "message": "Password changed successfully"
+  }
+}
+
+Side Effect:
+  → All other sessions (refresh tokens) invalidated
+  → Current session remains active
+
+Error Responses:
+  400 → Current password incorrect
+  422 → New password too weak or same as current
+
+GET /auth/google
+Initiate Google OAuth flow.
+Auth:   Public
+
+Query Parameters: none
+
+Response 302 (Redirect):
+  → Redirects browser to Google OAuth consent screen:
+    https://accounts.google.com/o/oauth2/v2/auth
+      ?client_id=GOOGLE_CLIENT_ID
+      &redirect_uri=https://api.vocaply.com/auth/google/callback
+      &response_type=code
+      &scope=openid email profile
+      &state=<32-byte-random-state>
+      &access_type=offline
+
+GET /auth/google/callback
+Google OAuth callback (called by Google, not frontend).
+Auth:   Public (verified via state parameter)
+
+Query Parameters (sent by Google):
+  code    string   REQUIRED
+          → Authorization code from Google
+
+  state   string   REQUIRED
+          → Must match state stored in Redis (CSRF check)
+
+  error   string   optional
+          → Set if user denied access: "access_denied"
+
+Success Response 302 (Redirect):
+  → https://vocaply.com/dashboard
+  → HttpOnly cookie set with refresh token
+  → Access token set in URL fragment (frontend reads once)
+  OR
+  → https://vocaply.com/onboarding (if new user)
+
+Error Response 302 (Redirect):
+  → https://vocaply.com/login?error=oauth_failed
+
+GET /auth/github
+Initiate GitHub OAuth flow.
+Auth:   Public
+
+Response 302 (Redirect):
+  → Redirects to GitHub OAuth consent screen:
+    https://github.com/login/oauth/authorize
+      ?client_id=GITHUB_CLIENT_ID
+      &redirect_uri=https://api.vocaply.com/auth/github/callback
+      &scope=read:user user:email
+      &state=<32-byte-random-state>
+
+GET /auth/github/callback
+GitHub OAuth callback.
+Auth:   Public (verified via state parameter)
+
+Query Parameters (sent by GitHub):
+  code    string   REQUIRED
+  state   string   REQUIRED
+
+Success Response 302 → /dashboard or /onboarding
+Error Response 302   → /login?error=oauth_failed
+
+GET /auth/sessions
+List all active sessions for current user.
+Auth:   Required
+
+Success Response 200:
+{
+  "success": true,
+  "data": [
+    {
+      "id":          "session_01",
+      "ipAddress":   "103.21.4.5",
+      "userAgent":   "Mozilla/5.0 (Macintosh; Intel Mac OS X...)",
+      "device":      "Mac — Chrome 124",
+      "lastUsedAt":  "2026-05-12T09:30:00Z",
+      "createdAt":   "2026-05-01T08:00:00Z",
+      "isCurrent":   true
+    }
+  ]
+}
+
+DELETE /auth/sessions/:sessionId
+Revoke a specific session (logout from that device).
+Auth:   Required
+
+Path Parameters:
+  sessionId   string   REQUIRED
+              → ID of the session to revoke
+              → Cannot revoke current session (use /auth/logout)
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "message": "Session revoked successfully"
+  }
+}
+
+3. Team APIs
+POST /teams
+Create a new team.
+Auth:   Required
+
+Request Body:
+{
+  "name": string   REQUIRED   min:2   max:100
+          → Team display name
+          → Example: "TechFlow Engineering"
+
+  "slug": string   optional   min:2   max:50
+          → URL-friendly identifier (auto-generated from name if not provided)
+          → Allowed: lowercase letters, numbers, hyphens only
+          → Must be globally unique
+          → Example: "techflow-eng"
+}
+
+Success Response 201:
+{
+  "success": true,
+  "data": {
+    "id":        "team_clx02xyz",
+    "name":      "TechFlow Engineering",
+    "slug":      "techflow-eng",
+    "plan":      "FREE",
+    "createdAt": "2026-05-01T09:00:00Z"
+  }
+}
+
+Error Responses:
+  409 → Slug already taken
+  422 → Invalid slug format
+
+GET /teams/me
+Get current team with members and usage.
+Auth:   Required
+
+Query Parameters: none
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "id":              "team_clx02xyz",
+    "name":            "TechFlow Engineering",
+    "slug":            "techflow-eng",
+    "plan":            "GROWTH",
+    "settings": {
+      "defaultTimezone":     "Asia/Karachi",
+      "weeklyDigestEnabled": true,
+      "weeklyDigestDay":     "MONDAY"
+    },
+    "usage": {
+      "meetingsUsed":  34,
+      "meetingsLimit": 150,
+      "membersCount":  5,
+      "membersLimit":  20
+    },
+    "billingCycleEnd": "2026-06-01T00:00:00Z",
+    "members": [
+      {
+        "id":              "usr_clx01abc",
+        "name":            "Ali Raza",
+        "email":           "ali@techflow.com",
+        "avatarUrl":       "https://...",
+        "role":            "MANAGER",
+        "commitmentScore": 87,
+        "openCommitments": 3,
+        "joinedAt":        "2026-01-15T09:00:00Z"
+      }
+    ],
+    "createdAt": "2026-01-15T09:00:00Z"
+  }
+}
+
+PATCH /teams/me
+Update team settings.
+Auth:   Required   Role: ADMIN+
+
+Request Body (all optional):
+{
+  "name": string   optional   min:2   max:100
+          → New team display name
+
+  "settings": object   optional
+    {
+      "defaultTimezone":     string    optional
+                             → IANA timezone: "Asia/Karachi"
+
+      "weeklyDigestEnabled": boolean   optional
+                             → Send weekly digest emails
+
+      "weeklyDigestDay":     string    optional
+                             → "MONDAY" | "FRIDAY" | "SUNDAY"
+    }
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "id":        "team_clx02xyz",
+    "name":      "TechFlow Engineering v2",
+    "settings":  { ...updated settings },
+    "updatedAt": "2026-05-12T10:00:00Z"
+  }
+}
+
+POST /teams/me/invite
+Invite members to team.
+Auth:   Required   Role: ADMIN+
+
+Request Body:
+{
+  "emails": string[]   REQUIRED   min:1 item   max:20 items
+            → Array of email addresses to invite
+            → Each must be valid email format
+            → Example: ["sara@techflow.com", "ahmed@techflow.com"]
+
+  "role": string   optional   default: "MEMBER"
+          → Role to assign to invited users
+          → Allowed: "MEMBER" | "MANAGER" | "ADMIN"
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "invited":       ["sara@techflow.com"],
+    "alreadyMember": ["ahmed@techflow.com"],
+    "failed":        [],
+    "inviteLink":    "https://vocaply.com/invite/token_abc123"
+  }
+}
+
+Side Effect:
+  → Invite email sent to each new email
+  → Email includes team name + join link (expires 7 days)
+
+GET /teams/me/members
+List all team members.
+Auth:   Required
+
+Query Parameters:
+  role     string    optional
+           → Filter by role: "OWNER" | "ADMIN" | "MANAGER" | "MEMBER"
+
+  search   string    optional   max:100
+           → Search by name or email (case-insensitive)
+
+  page     integer   optional   default:1
+  limit    integer   optional   default:20   max:100
+
+Success Response 200:
+{
+  "success": true,
+  "data": [
+    {
+      "id":              "usr_clx01abc",
+      "name":            "Ali Raza",
+      "email":           "ali@techflow.com",
+      "avatarUrl":       "https://...",
+      "role":            "MANAGER",
+      "commitmentScore": 87,
+      "openCommitments": 3,
+      "missedThisMonth": 1,
+      "fulfilledThisMonth": 8,
+      "trend":           "improving",
+      "joinedAt":        "2026-01-15T09:00:00Z",
+      "lastActiveAt":    "2026-05-12T08:30:00Z"
+    }
+  ],
+  "meta": {
+    "total": 5,
+    "page":  1,
+    "limit": 20,
+    "hasMore": false
+  }
+}
+
+PATCH /teams/me/members/:userId/role
+Change a member's role.
+Auth:   Required   Role: ADMIN+
+
+Path Parameters:
+  userId   string   REQUIRED
+           → ID of the member to update
+
+Request Body:
+{
+  "role": string   REQUIRED
+          → New role to assign
+          → Allowed: "MEMBER" | "MANAGER" | "ADMIN"
+          → Cannot change OWNER role (use /transfer-ownership)
+          → Cannot downgrade yourself
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "userId": "usr_clx03def",
+    "name":   "Sara Khan",
+    "role":   "MANAGER",
+    "updatedAt": "2026-05-12T10:00:00Z"
+  }
+}
+
+Error Responses:
+  403 → Cannot change OWNER role
+  403 → Cannot change your own role
+  404 → Member not found in this team
+
+DELETE /teams/me/members/:userId
+Remove a member from the team.
+Auth:   Required   Role: ADMIN+
+
+Path Parameters:
+  userId   string   REQUIRED
+           → ID of the member to remove
+           → Cannot remove yourself
+           → Cannot remove OWNER
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "message": "Member removed from team",
+    "userId":  "usr_clx03def"
+  }
+}
+
+Error Responses:
+  403 → Cannot remove yourself
+  403 → Cannot remove the team OWNER
+  404 → Member not found
+
+4. Meeting APIs
+POST /meetings
+Create a meeting and auto-schedule the bot.
+Auth:   Required
+
+Request Body:
+{
+  "title": string   REQUIRED   min:1   max:255
+           → Meeting title/name
+           → Example: "Monday Engineering Standup"
+
+  "platform": string   REQUIRED
+              → Meeting platform
+              → Allowed: "ZOOM" | "GOOGLE_MEET" | "TEAMS" | "WEBEX" | "MANUAL"
+
+  "meetingUrl": string   REQUIRED   must be valid URL
+                → Full meeting join URL
+                → Example: "https://zoom.us/j/123456789"
+                → Vocaply extracts platform ID for deduplication
+
+  "scheduledAt": string   REQUIRED   ISO 8601 datetime
+                 → When the meeting is scheduled to start
+                 → Example: "2026-05-12T09:00:00Z"
+                 → Must be in the future (within 7 days for bot scheduling)
+
+  "calendarEventId": string   optional
+                     → Google Calendar event ID (used for deduplication)
+                     → Example: "gcal_event_abc123"
+}
+
+Success Response 201:
+{
+  "success": true,
+  "data": {
+    "id":          "mtg_clx05pqr",
+    "title":       "Monday Engineering Standup",
+    "platform":    "ZOOM",
+    "meetingUrl":  "https://zoom.us/j/123456789",
+    "recallBotId": "bot_recall_abc123",
+    "status":      "SCHEDULED",
+    "scheduledAt": "2026-05-12T09:00:00Z",
+    "createdAt":   "2026-05-11T10:00:00Z",
+    "message":     "Bot scheduled — will join 2 minutes before meeting start"
+  }
+}
+
+Error Responses:
+  402 PLAN_LIMIT → Monthly meeting limit reached
+    {
+      "error": {
+        "code": "PLAN_LIMIT",
+        "message": "Monthly meeting limit reached (5/5 on Free plan)",
+        "details": {
+          "used":    5,
+          "limit":   5,
+          "plan":    "FREE",
+          "upgradeUrl": "https://vocaply.com/settings/billing"
+        }
+      }
+    }
+  409 DUPLICATE → Meeting with same URL already scheduled for team
+
+GET /meetings
+List all team meetings with filters.
+Auth:   Required
+
+Query Parameters:
+  status      string    optional
+              → Filter by status
+              → Allowed: "SCHEDULED" | "BOT_JOINING" | "RECORDING"
+                         "PROCESSING" | "DONE" | "FAILED" | "CANCELLED"
+
+  platform    string    optional
+              → Filter by platform: "ZOOM" | "GOOGLE_MEET" | "TEAMS"
+
+  from        string    optional   ISO date "2026-05-01"
+              → Filter meetings scheduled on or after this date
+
+  to          string    optional   ISO date "2026-05-31"
+              → Filter meetings scheduled on or before this date
+
+  search      string    optional   max:100
+              → Search by meeting title (case-insensitive)
+
+  page        integer   optional   default:1
+  limit       integer   optional   default:20   max:100
+  sortBy      string    optional   default:"scheduledAt"
+              → Allowed: "scheduledAt" | "createdAt" | "title"
+  sortOrder   string    optional   default:"desc"
+              → Allowed: "asc" | "desc"
+
+Success Response 200:
+{
+  "success": true,
+  "data": [
+    {
+      "id":               "mtg_clx05pqr",
+      "title":            "Monday Engineering Standup",
+      "platform":         "ZOOM",
+      "status":           "DONE",
+      "scheduledAt":      "2026-05-12T09:00:00Z",
+      "startedAt":        "2026-05-12T09:01:22Z",
+      "endedAt":          "2026-05-12T09:29:45Z",
+      "durationMinutes":  28,
+      "participantCount": 5,
+      "commitmentCount":  3,
+      "actionItemCount":  5,
+      "decisionCount":    2,
+      "summary":          "Team discussed sprint 12 progress...",
+      "createdAt":        "2026-05-11T10:00:00Z"
+    }
+  ],
+  "meta": {
+    "total":   45,
+    "page":    1,
+    "limit":   20,
+    "hasMore": true
+  }
+}
+
+GET /meetings/:meetingId
+Get full meeting detail.
+Auth:   Required
+
+Path Parameters:
+  meetingId   string   REQUIRED
+              → Meeting ID
+              → Example: "mtg_clx05pqr"
+
+Query Parameters:
+  include   string   optional   comma-separated
+            → Extra relations to include
+            → Options: "participants", "commitments", "actionItems", "decisions", "blockers"
+            → Default: all included
+            → Example: ?include=commitments,actionItems
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "id":               "mtg_clx05pqr",
+    "title":            "Monday Engineering Standup",
+    "platform":         "ZOOM",
+    "meetingUrl":       "https://zoom.us/j/123456789",
+    "recallBotId":      "bot_recall_abc123",
+    "status":           "DONE",
+    "scheduledAt":      "2026-05-12T09:00:00Z",
+    "startedAt":        "2026-05-12T09:01:22Z",
+    "endedAt":          "2026-05-12T09:29:45Z",
+    "durationMinutes":  28,
+    "summary":          "Team reviewed sprint 12 progress. Key items: login feature delayed, payment bug fixed, design review scheduled.",
+
+    "participants": [
+      {
+        "id":         "part_01",
+        "name":       "Ali Raza",
+        "email":      "ali@techflow.com",
+        "userId":     "usr_clx01abc",
+        "avatarUrl":  "https://...",
+        "speakerTag": "Speaker 1",
+        "joinedAt":   "2026-05-12T09:01:22Z",
+        "leftAt":     "2026-05-12T09:29:45Z"
+      }
+    ],
+
+    "commitments": [
+      {
+        "id":           "com_01",
+        "text":         "I'll finish the login feature by Thursday",
+        "owner":        { "id": "usr_02", "name": "Ahmed Hassan" },
+        "dueDate":      "2026-05-15T23:59:59Z",
+        "dueDateRaw":   "by Thursday",
+        "status":       "PENDING",
+        "confidence":   0.95
+      }
+    ],
+
+    "actionItems": [
+      {
+        "id":       "ai_01",
+        "text":     "Fix payment bug in checkout",
+        "assignee": { "id": "usr_02", "name": "Ahmed Hassan" },
+        "dueDate":  "2026-05-15T23:59:59Z",
+        "priority": "HIGH",
+        "completed": false,
+        "jiraIssueId":  "TECH-142",
+        "jiraIssueUrl": "https://techflow.atlassian.net/browse/TECH-142"
+      }
+    ],
+
+    "decisions": [
+      {
+        "id":     "dec_01",
+        "text":   "Team decided to use PostgreSQL over MySQL",
+        "madeBy": "Ali Raza"
+      }
+    ],
+
+    "blockers": [
+      {
+        "id":          "blk_01",
+        "text":        "Waiting for API credentials from DevOps",
+        "affectedUser": "Ahmed Hassan",
+        "resolved":    false
+      }
+    ],
+
+    "createdAt": "2026-05-11T10:00:00Z"
+  }
+}
+
+Error Responses:
+  404 → Meeting not found or not in your team
+
+GET /meetings/:meetingId/transcript
+Get full searchable transcript.
+Auth:   Required
+
+Path Parameters:
+  meetingId   string   REQUIRED
+
+Query Parameters:
+  search      string    optional   max:200
+              → Search text within transcript
+              → Returns matching turns with highlighted text
+              → Example: ?search=login feature
+
+  speaker     string    optional
+              → Filter by speaker email
+              → Example: ?speaker=ali@techflow.com
+
+  fromTime    number    optional
+              → Filter turns starting from this time (seconds)
+              → Example: ?fromTime=300 (from 5 min mark)
+
+  toTime      number    optional
+              → Filter turns up to this time (seconds)
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "meetingId":  "mtg_clx05pqr",
+    "totalTurns": 89,
+    "processedAt": "2026-05-12T09:35:00Z",
+    "turns": [
+      {
+        "id":              "turn_01",
+        "speakerName":     "Ali Raza",
+        "speakerEmail":    "ali@techflow.com",
+        "speakerAvatarUrl":"https://...",
+        "text":            "Good morning everyone, let's start with the standup.",
+        "startTime":       5.2,
+        "endTime":         10.8,
+        "startTimeFormatted": "00:05",
+        "confidence":      0.97,
+        "highlight":       null
+      }
+    ],
+    "searchResultCount": 3
+  }
+}
+
+POST /meetings/bot/add
+Manually add bot to an ongoing meeting.
+Auth:   Required
+
+Request Body:
+{
+  "meetingUrl": string   REQUIRED   valid URL
+                → Full URL of the meeting to join
+                → Example: "https://zoom.us/j/987654321"
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "meetingId":   "mtg_clx06stu",
+    "recallBotId": "bot_recall_xyz789",
+    "status":      "BOT_JOINING",
+    "message":     "Bot will join the meeting in approximately 30 seconds"
+  }
+}
+
+Error Responses:
+  400 → Unsupported meeting platform
+  409 → Bot already in this meeting
+  402 → Plan limit reached
+
+DELETE /meetings/:meetingId/bot
+Remove bot from ongoing meeting.
+Auth:   Required
+
+Path Parameters:
+  meetingId   string   REQUIRED
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "message":    "Bot removed from meeting",
+    "meetingId":  "mtg_clx05pqr",
+    "status":     "CANCELLED"
+  }
+}
+
+DELETE /meetings/:meetingId
+Delete a meeting and its data.
+Auth:   Required   Role: ADMIN+
+
+Path Parameters:
+  meetingId   string   REQUIRED
+
+Query Parameters:
+  deleteTranscript   boolean   optional   default:false
+                     → Also delete transcript from MongoDB
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "message":   "Meeting deleted",
+    "meetingId": "mtg_clx05pqr"
+  }
+}
+
+Error Responses:
+  404 → Meeting not found
+  409 → Cannot delete meeting that is currently recording
+
+5. Commitment APIs
+GET /commitments
+List all team commitments with filters.
+Auth:   Required
+
+Query Parameters:
+  status      string    optional
+              → Filter by status
+              → Allowed: "PENDING" | "FULFILLED" | "MISSED" | "DEFERRED" | "CANCELLED"
+              → Can pass multiple: ?status=PENDING&status=MISSED
+
+  ownerId     string    optional
+              → Filter by team member user ID
+              → Example: ?ownerId=usr_clx01abc
+
+  meetingId   string    optional
+              → Filter commitments from a specific meeting
+
+  overdue     boolean   optional
+              → If true: only return PENDING commitments past due date
+
+  from        string    optional   ISO date
+              → Filter commitments created on or after this date
+
+  to          string    optional   ISO date
+              → Filter commitments created on or before this date
+
+  search      string    optional   max:200
+              → Search within commitment text
+
+  page        integer   optional   default:1
+  limit       integer   optional   default:20   max:100
+  sortBy      string    optional   default:"createdAt"
+              → Allowed: "createdAt" | "dueDate" | "status" | "ownerName"
+  sortOrder   string    optional   default:"desc"
+
+Success Response 200:
+{
+  "success": true,
+  "data": [
+    {
+      "id":            "com_01",
+      "text":          "I'll finish the login feature by Thursday",
+      "normalizedText":"finish login feature",
+      "status":        "MISSED",
+      "dueDate":       "2026-05-09T23:59:59Z",
+      "dueDateRaw":    "by Thursday",
+      "daysOverdue":   2,
+      "confidenceScore": 0.95,
+      "owner": {
+        "id":        "usr_clx02def",
+        "name":      "Ahmed Hassan",
+        "email":     "ahmed@techflow.com",
+        "avatarUrl": "https://..."
+      },
+      "meeting": {
+        "id":          "mtg_clx05pqr",
+        "title":       "Monday Standup",
+        "scheduledAt": "2026-05-06T09:00:00Z"
+      },
+      "resolvedInMeeting": null,
+      "reminderSentAt":    "2026-05-09T09:00:00Z",
+      "missedAlertSentAt": "2026-05-09T18:00:00Z",
+      "createdAt":    "2026-05-06T09:32:00Z"
+    }
+  ],
+  "meta": {
+    "total":   23,
+    "page":    1,
+    "limit":   20,
+    "hasMore": true,
+    "counts": {
+      "PENDING":   7,
+      "FULFILLED": 12,
+      "MISSED":    3,
+      "DEFERRED":  1
+    }
+  }
+}
+
+GET /commitments/my
+Get current user's own commitments.
+Auth:   Required
+
+Query Parameters:
+  status   string    optional
+           → Filter by status (same options as /commitments)
+
+  overdue  boolean   optional
+
+  page     integer   optional   default:1
+  limit    integer   optional   default:10
+
+Success Response 200:
+{
+  "success": true,
+  "data": [ ...commitments ],
+  "meta": {
+    "total":   8,
+    "page":    1,
+    "limit":   10,
+    "hasMore": false,
+    "summary": {
+      "pending":   3,
+      "overdue":   1,
+      "fulfilled": 4,
+      "missed":    0
+    }
+  }
+}
+
+GET /commitments/stats
+Get commitment statistics for the team.
+Auth:   Required   Role: MANAGER+
+
+Query Parameters:
+  from   string   optional   ISO date   default: start of current month
+  to     string   optional   ISO date   default: today
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "period": {
+      "from": "2026-05-01",
+      "to":   "2026-05-31"
+    },
+    "team": {
+      "total":           45,
+      "fulfilled":       30,
+      "missed":          8,
+      "pending":         7,
+      "fulfillmentRate": 79,
+      "avgDaysOverdue":  1.5
+    },
+    "byMember": [
+      {
+        "userId":          "usr_clx01abc",
+        "name":            "Ali Raza",
+        "avatarUrl":       "https://...",
+        "total":           12,
+        "fulfilled":       11,
+        "missed":          1,
+        "pending":         0,
+        "fulfillmentRate": 92,
+        "score":           92,
+        "trend":           "improving"
+      }
+    ],
+    "trend": [
+      { "week": "2026-W18", "fulfillmentRate": 75, "label": "May 1-7" },
+      { "week": "2026-W19", "fulfillmentRate": 82, "label": "May 8-14" }
+    ]
+  }
+}
+
+GET /commitments/:commitmentId
+Get single commitment detail.
+Auth:   Required
+
+Path Parameters:
+  commitmentId   string   REQUIRED
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "id":              "com_01",
+    "text":            "I'll finish the login feature by Thursday",
+    "normalizedText":  "finish login feature",
+    "status":          "MISSED",
+    "dueDate":         "2026-05-09T23:59:59Z",
+    "dueDateRaw":      "by Thursday",
+    "daysOverdue":     2,
+    "confidenceScore": 0.95,
+    "owner":           { ...user object },
+    "meeting":         { ...meeting summary },
+    "resolvedAt":      null,
+    "resolvedInMeeting": null,
+    "reminderSentAt":    "2026-05-09T09:00:00Z",
+    "missedAlertSentAt": "2026-05-09T18:00:00Z",
+    "createdAt":       "2026-05-06T09:32:00Z"
+  }
+}
+
+PATCH /commitments/:commitmentId/status
+Update commitment status.
+Auth:   Required
+        → MEMBER: can only update their OWN commitments
+        → MANAGER+: can update any team member's commitments
+
+Path Parameters:
+  commitmentId   string   REQUIRED
+
+Request Body:
+{
+  "status": string   REQUIRED
+            → New status to set
+            → Allowed: "FULFILLED" | "DEFERRED" | "CANCELLED"
+            → Cannot set to "PENDING" or "MISSED" (system-managed)
+
+  "note": string   optional   max:500
+          → Reason or context for the status change
+          → Example: "Pushed to next sprint due to dependency"
+
+  "newDueDate": string   conditional   ISO 8601 datetime
+                → REQUIRED when status = "DEFERRED"
+                → Must be in the future
+                → Example: "2026-05-20T23:59:59Z"
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "id":         "com_01",
+    "status":     "FULFILLED",
+    "resolvedAt": "2026-05-12T10:15:00Z",
+    "updatedAt":  "2026-05-12T10:15:00Z"
+  }
+}
+
+Side Effects:
+  → FULFILLED: Slack notification to team, score updated, Jira/Linear updated
+  → DEFERRED:  Reminder rescheduled to new due date
+  → CANCELLED: Removed from open commitments, no further alerts
+
+Error Responses:
+  403 → MEMBER trying to update another member's commitment
+  404 → Commitment not found
+  422 → Invalid status transition
+  422 → newDueDate required for DEFERRED status
+  422 → newDueDate must be in the future
+
+6. Action Item APIs
+GET /action-items
+List all team action items.
+Auth:   Required
+
+Query Parameters:
+  assigneeId    string    optional
+                → Filter by assignee user ID
+
+  completed     boolean   optional
+                → true: only completed items
+                → false: only incomplete items (default)
+
+  priority      string    optional
+                → Filter by priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT"
+                → Can pass multiple: ?priority=HIGH&priority=URGENT
+
+  meetingId     string    optional
+                → From a specific meeting only
+
+  hasJiraTicket boolean   optional
+                → true: items synced to Jira
+                → false: items NOT yet synced to Jira
+
+  hasLinearIssue boolean  optional
+
+  from          string    optional   ISO date
+  to            string    optional   ISO date
+
+  search        string    optional   max:200
+                → Search within action item text
+
+  page          integer   optional   default:1
+  limit         integer   optional   default:20   max:100
+  sortBy        string    optional   default:"createdAt"
+                → Allowed: "createdAt" | "dueDate" | "priority"
+  sortOrder     string    optional   default:"desc"
+
+Success Response 200:
+{
+  "success": true,
+  "data": [
+    {
+      "id":       "ai_01",
+      "text":     "Fix payment bug in checkout flow",
+      "priority": "HIGH",
+      "dueDate":  "2026-05-15T23:59:59Z",
+      "completed": false,
+      "completedAt": null,
+      "assignee": {
+        "id":        "usr_clx02def",
+        "name":      "Ahmed Hassan",
+        "email":     "ahmed@techflow.com",
+        "avatarUrl": "https://..."
+      },
+      "meeting": {
+        "id":          "mtg_clx05pqr",
+        "title":       "Monday Standup",
+        "scheduledAt": "2026-05-06T09:00:00Z"
+      },
+      "jiraIssueId":    "TECH-142",
+      "jiraIssueUrl":   "https://techflow.atlassian.net/browse/TECH-142",
+      "linearIssueId":  null,
+      "linearIssueUrl": null,
+      "notionPageId":   null,
+      "createdAt":      "2026-05-06T09:32:00Z"
+    }
+  ],
+  "meta": {
+    "total":   112,
+    "page":    1,
+    "limit":   20,
+    "hasMore": true
+  }
+}
+
+PATCH /action-items/:actionItemId
+Update an action item.
+Auth:   Required
+
+Path Parameters:
+  actionItemId   string   REQUIRED
+
+Request Body (all optional):
+{
+  "completed": boolean   optional
+               → Mark item complete or incomplete
+
+  "assigneeId": string   optional
+                → Reassign to different team member
+                → Must be valid team member ID
+
+  "dueDate": string   optional   ISO 8601 datetime
+             → Update due date
+             → Set null to remove due date
+
+  "priority": string   optional
+              → Change priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT"
+
+  "text": string   optional   min:1   max:500
+          → Edit the action item text
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "id":          "ai_01",
+    "text":        "Fix payment bug in checkout flow",
+    "priority":    "URGENT",
+    "completed":   true,
+    "completedAt": "2026-05-12T10:30:00Z",
+    "assignee":    { ...user object },
+    "updatedAt":   "2026-05-12T10:30:00Z"
+  }
+}
+
+POST /action-items/:actionItemId/sync
+Manually trigger sync to Jira, Linear, or Notion.
+Auth:   Required
+
+Path Parameters:
+  actionItemId   string   REQUIRED
+
+Request Body:
+{
+  "provider": string   REQUIRED
+              → Which integration to sync to
+              → Allowed: "JIRA" | "LINEAR" | "NOTION"
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "provider":   "JIRA",
+    "issueId":    "TECH-145",
+    "issueKey":   "TECH-145",
+    "issueUrl":   "https://techflow.atlassian.net/browse/TECH-145",
+    "syncedAt":   "2026-05-12T10:00:00Z"
+  }
+}
+
+Error Responses:
+  404 → Action item not found
+  422 → Integration not connected for this provider
+  502 → Jira/Linear API error
+
+7. Analytics APIs
+GET /analytics/overview
+Get team-level metrics overview.
+Auth:   Required   Role: MANAGER+
+
+Query Parameters:
+  from   string   optional   ISO date   default: 30 days ago
+  to     string   optional   ISO date   default: today
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "period": {
+      "from": "2026-05-01",
+      "to":   "2026-05-31"
+    },
+    "meetings": {
+      "total":               24,
+      "totalMinutes":        680,
+      "avgDurationMinutes":  28,
+      "byPlatform": {
+        "ZOOM":        15,
+        "GOOGLE_MEET":  9
+      }
+    },
+    "commitments": {
+      "total":           67,
+      "fulfilled":       51,
+      "missed":          10,
+      "pending":         6,
+      "fulfillmentRate": 84,
+      "avgDaysOverdue":  1.2
+    },
+    "actionItems": {
+      "total":          112,
+      "completed":       89,
+      "completionRate":  79
+    },
+    "teamHealthScore":  81,
+    "healthTrend":      "improving"
+  }
+}
+
+GET /analytics/members
+Per-member analytics breakdown.
+Auth:   Required   Role: MANAGER+
+
+Query Parameters:
+  from    string   optional   ISO date   default: 30 days ago
+  to      string   optional   ISO date   default: today
+  sortBy  string   optional   default: "commitmentScore"
+          → Allowed: "commitmentScore" | "name" | "fulfillmentRate"
+  sortOrder string optional   default: "desc"
+
+Success Response 200:
+{
+  "success": true,
+  "data": [
+    {
+      "userId":    "usr_clx01abc",
+      "name":      "Ali Raza",
+      "email":     "ali@techflow.com",
+      "avatarUrl": "https://...",
+      "role":      "MANAGER",
+      "commitmentScore": 92,
+      "commitments": {
+        "total":           15,
+        "fulfilled":       14,
+        "missed":          1,
+        "pending":         0,
+        "fulfillmentRate": 93,
+        "onTimeRate":      87
+      },
+      "actionItems": {
+        "total":          22,
+        "completed":      19,
+        "completionRate": 86
+      },
+      "trend":      "improving",
+      "scoreChange": +3
+    }
+  ]
+}
+
+GET /analytics/trends
+Time-series trend data for charts.
+Auth:   Required   Role: MANAGER+
+
+Query Parameters:
+  metric      string   REQUIRED
+              → Which metric to chart
+              → Allowed: "fulfillmentRate" | "commitmentCount"
+                         "meetingsPerWeek" | "teamHealthScore"
+                         "missedCount" | "actionItemCompletionRate"
+
+  granularity string   optional   default: "week"
+              → Time bucket size: "day" | "week" | "month"
+
+  from        string   optional   ISO date   default: 90 days ago
+  to          string   optional   ISO date   default: today
+
+  memberId    string   optional
+              → Filter trend for a specific member only
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "metric":      "fulfillmentRate",
+    "granularity": "week",
+    "points": [
+      { "period": "2026-W14", "value": 72, "label": "Apr 1-7",   "count": 18 },
+      { "period": "2026-W15", "value": 78, "label": "Apr 8-14",  "count": 21 },
+      { "period": "2026-W16", "value": 85, "label": "Apr 15-21", "count": 19 },
+      { "period": "2026-W17", "value": 81, "label": "Apr 22-28", "count": 24 },
+      { "period": "2026-W18", "value": 89, "label": "May 1-7",   "count": 22 }
+    ],
+    "summary": {
+      "average": 81,
+      "highest": 89,
+      "lowest":  72,
+      "trend":   "improving"
+    }
+  }
+}
+
+8. Integration APIs
+GET /integrations
+List all integrations with their status.
+Auth:   Required
+
+Success Response 200:
+{
+  "success": true,
+  "data": [
+    {
+      "provider":      "SLACK",
+      "isActive":      true,
+      "workspaceId":   "T12345",
+      "workspaceName": "TechFlow",
+      "connectedAt":   "2026-01-20T10:00:00Z",
+      "connectedBy":   "ali@techflow.com",
+      "settings": {
+        "defaultChannelId":   "C12345",
+        "defaultChannelName": "#engineering",
+        "postMeetingSummary": true,
+        "postCommitmentAlerts": true
+      }
+    },
+    {
+      "provider":      "JIRA",
+      "isActive":      true,
+      "workspaceId":   "techflow.atlassian.net",
+      "workspaceName": "techflow.atlassian.net",
+      "connectedAt":   "2026-01-25T10:00:00Z",
+      "connectedBy":   "ali@techflow.com",
+      "settings": {
+        "projectKey":      "TECH",
+        "defaultIssueType": "Task",
+        "defaultPriority":  "Medium"
+      }
+    },
+    {
+      "provider":  "LINEAR",
+      "isActive":  false,
+      "settings":  {}
+    },
+    {
+      "provider":  "NOTION",
+      "isActive":  false,
+      "settings":  {}
+    },
+    {
+      "provider":  "GOOGLE_CALENDAR",
+      "isActive":  true,
+      "settings":  {
+        "calendarId":    "ali@techflow.com",
+        "syncEnabled":   true,
+        "lastSyncedAt":  "2026-05-12T08:00:00Z"
+      }
+    }
+  ]
+}
+
+GET /integrations/:provider/oauth-url
+Get OAuth URL to connect an integration.
+Auth:   Required   Role: ADMIN+
+
+Path Parameters:
+  provider   string   REQUIRED
+             → Allowed: "JIRA" | "LINEAR" | "SLACK" | "NOTION" | "GOOGLE_CALENDAR"
+
+Query Parameters:
+  redirectUrl   string   optional   valid URL
+                → Where to redirect after OAuth (default: settings/integrations)
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "url":   "https://auth.atlassian.com/authorize?client_id=...&state=xyz",
+    "state": "xyz123"
+  }
+}
+
+POST /integrations/:provider/callback
+Handle OAuth callback after user authorizes.
+Auth:   Required
+
+Path Parameters:
+  provider   string   REQUIRED
+
+Request Body:
+{
+  "code":  string   REQUIRED
+           → Authorization code returned by OAuth provider
+
+  "state": string   REQUIRED
+           → State parameter for CSRF verification
+           → Must match the state from /oauth-url response
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "provider":      "JIRA",
+    "isActive":      true,
+    "workspaceName": "techflow.atlassian.net",
+    "connectedAt":   "2026-05-12T10:00:00Z",
+    "message":       "Jira connected successfully"
+  }
+}
+
+Error Responses:
+  400 → State mismatch (CSRF detected)
+  400 → OAuth code invalid or expired
+  502 → Provider API error during token exchange
+
+PATCH /integrations/:provider/settings
+Update integration-specific settings.
+Auth:   Required   Role: ADMIN+
+
+Path Parameters:
+  provider   string   REQUIRED
+
+Request Body (varies by provider):
+
+SLACK settings:
+{
+  "defaultChannelId":      string   optional
+                           → Slack channel ID (e.g., "C12345")
+
+  "postMeetingSummary":    boolean  optional
+                           → Post summary after each meeting
+
+  "postCommitmentAlerts":  boolean  optional
+                           → Post when commitment missed
+}
+
+JIRA settings:
+{
+  "projectKey":       string   optional
+                      → Jira project key (e.g., "TECH", "ENG")
+
+  "defaultIssueType": string   optional
+                      → Jira issue type: "Task" | "Bug" | "Story"
+
+  "defaultPriority":  string   optional
+                      → "Lowest" | "Low" | "Medium" | "High" | "Highest"
+}
+
+LINEAR settings:
+{
+  "teamId":       string   optional
+                  → Linear team ID
+
+  "defaultState": string   optional
+                  → Issue state name: "Todo" | "In Progress"
+}
+
+NOTION settings:
+{
+  "databaseId":   string   optional
+                  → Notion database ID to add meeting pages to
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "provider": "SLACK",
+    "settings": { ...updated settings },
+    "updatedAt": "2026-05-12T10:00:00Z"
+  }
+}
+
+POST /integrations/:provider/test
+Test if integration is working correctly.
+Auth:   Required
+
+Path Parameters:
+  provider   string   REQUIRED
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "connected":     true,
+    "provider":      "JIRA",
+    "workspaceName": "techflow.atlassian.net",
+    "tokenValid":    true,
+    "testedAt":      "2026-05-12T10:00:00Z"
+  }
+}
+
+Error Response 200 (connection failed):
+{
+  "success": true,
+  "data": {
+    "connected":  false,
+    "provider":   "JIRA",
+    "error":      "Token expired — please reconnect",
+    "reconnectUrl": "https://api.vocaply.com/api/v1/integrations/JIRA/oauth-url"
+  }
+}
+
+DELETE /integrations/:provider
+Disconnect an integration.
+Auth:   Required   Role: ADMIN+
+
+Path Parameters:
+  provider   string   REQUIRED
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "message":  "Jira disconnected successfully",
+    "provider": "JIRA"
+  }
+}
+
+Side Effect:
+  → OAuth tokens deleted from DB
+  → Future meetings will not create Jira issues
+  → Existing Jira issue references remain in action_items table
+
+GET /integrations/calendar/events
+Preview meetings detected from connected calendars.
+Auth:   Required
+
+Query Parameters:
+  from   string   optional   ISO date   default: today
+  to     string   optional   ISO date   default: 7 days from now
+
+Success Response 200:
+{
+  "success": true,
+  "data": [
+    {
+      "calendarEventId":  "gcal_abc123",
+      "title":            "Monday Standup",
+      "startTime":        "2026-05-13T09:00:00Z",
+      "endTime":          "2026-05-13T09:30:00Z",
+      "meetingUrl":       "https://zoom.us/j/123456789",
+      "platform":         "ZOOM",
+      "participants":     ["ali@techflow.com", "sara@techflow.com"],
+      "botScheduled":     true,
+      "vocaplyMeetingId": "mtg_clx05pqr",
+      "source":           "ali@techflow.com"
+    }
+  ]
+}
+
+9. Billing APIs
+GET /billing/plans
+Get all available plans.
+Auth:   Public (no token required)
+
+Success Response 200:
+{
+  "success": true,
+  "data": [
+    {
+      "id":       "free",
+      "name":     "Free",
+      "price":    0,
+      "currency": "USD",
+      "interval": "month",
+      "popular":  false,
+      "limits": {
+        "meetingsPerMonth": 5,
+        "membersPerTeam":   2,
+        "historyDays":      7,
+        "integrations":     1,
+        "storageGB":        1
+      },
+      "features": [
+        "5 meetings per month",
+        "2 team members",
+        "Basic commitment tracking",
+        "1 integration (Slack or Jira)",
+        "7-day history"
+      ]
+    },
+    {
+      "id":            "starter",
+      "name":          "Starter",
+      "price":         29,
+      "currency":      "USD",
+      "interval":      "month",
+      "popular":       false,
+      "stripePriceId": "price_starter_monthly",
+      "annualPrice":   264,
+      "annualStripePriceId": "price_starter_annual",
+      "annualSaving":  84,
+      "limits": {
+        "meetingsPerMonth": 30,
+        "membersPerTeam":   5,
+        "historyDays":      30,
+        "integrations":     -1,
+        "storageGB":        10
+      },
+      "features": [
+        "30 meetings per month",
+        "Up to 5 team members",
+        "Full commitment tracking",
+        "All integrations",
+        "30-day history",
+        "Email + Slack alerts"
+      ]
+    },
+    {
+      "id":       "growth",
+      "name":     "Growth",
+      "price":    79,
+      "popular":  true,
+      "limits": {
+        "meetingsPerMonth": 150,
+        "membersPerTeam":   20,
+        "historyDays":      365,
+        "integrations":     -1,
+        "storageGB":        50
+      },
+      "features": [ "150 meetings per month", "Up to 20 members", ... ]
+    },
+    {
+      "id":       "business",
+      "name":     "Business",
+      "price":    149,
+      "popular":  false,
+      "limits": {
+        "meetingsPerMonth": -1,
+        "membersPerTeam":   -1,
+        "historyDays":      -1,
+        "integrations":     -1,
+        "storageGB":        -1
+      },
+      "features": [ "Unlimited meetings", "Unlimited members", ... ]
+    }
+  ]
+}
+
+Note: -1 in limits means "unlimited"
+
+GET /billing/subscription
+Get current team subscription and usage.
+Auth:   Required
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "plan":    "GROWTH",
+    "status":  "ACTIVE",
+    "currentPeriodStart": "2026-05-01T00:00:00Z",
+    "currentPeriodEnd":   "2026-06-01T00:00:00Z",
+    "cancelAtPeriodEnd":  false,
+    "trialEndsAt":        null,
+    "usage": {
+      "meetingsUsed":     34,
+      "meetingsLimit":    150,
+      "meetingsPercent":  23,
+      "membersCount":     5,
+      "membersLimit":     20,
+      "storageUsedGB":    2.4,
+      "storageLimit":     50
+    },
+    "nextBillingDate":   "2026-06-01T00:00:00Z",
+    "nextBillingAmount": 7900
+  }
+}
+
+POST /billing/checkout
+Create Stripe checkout session to upgrade plan.
+Auth:   Required   Role: ADMIN+
+
+Request Body:
+{
+  "planId": string   REQUIRED
+            → Plan to upgrade to
+            → Allowed: "starter" | "growth" | "business"
+
+  "interval": string   REQUIRED
+              → Billing interval: "month" | "year"
+
+  "successUrl": string   REQUIRED   valid URL
+                → Where to redirect after successful payment
+                → Example: "https://vocaply.com/settings/billing?success=true"
+
+  "cancelUrl": string   REQUIRED   valid URL
+               → Where to redirect if user cancels checkout
+               → Example: "https://vocaply.com/settings/billing"
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "checkoutUrl": "https://checkout.stripe.com/pay/cs_test_abc123...",
+    "sessionId":   "cs_test_abc123"
+  }
+}
+
+Note: Redirect user to checkoutUrl immediately after receiving this response
+
+POST /billing/portal
+Create Stripe billing portal session (manage subscription).
+Auth:   Required   Role: ADMIN+
+
+Request Body:
+{
+  "returnUrl": string   REQUIRED   valid URL
+               → Where to redirect when user closes billing portal
+               → Example: "https://vocaply.com/settings/billing"
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "portalUrl": "https://billing.stripe.com/session/bps_test_abc123..."
+  }
+}
+
+GET /billing/invoices
+Get invoice history.
+Auth:   Required   Role: ADMIN+
+
+Query Parameters:
+  page    integer   optional   default:1
+  limit   integer   optional   default:12   max:50
+
+Success Response 200:
+{
+  "success": true,
+  "data": [
+    {
+      "id":           "inv_abc123",
+      "number":       "VOC-2026-001",
+      "amount":       7900,
+      "currency":     "usd",
+      "formattedAmount": "$79.00",
+      "status":       "PAID",
+      "description":  "Growth Plan — May 2026",
+      "periodStart":  "2026-05-01",
+      "periodEnd":    "2026-06-01",
+      "invoiceUrl":   "https://invoice.stripe.com/i/...",
+      "pdfUrl":       "https://pay.stripe.com/invoice/.../pdf",
+      "paidAt":       "2026-05-01T00:01:00Z"
+    }
+  ],
+  "meta": {
+    "total":   6,
+    "page":    1,
+    "limit":   12,
+    "hasMore": false
+  }
+}
+
+10. Notification APIs
+GET /notifications/preferences
+Get user's notification preferences.
+Auth:   Required
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "email": {
+      "meetingSummary":    true,
+      "deadlineReminder":  true,
+      "commitmentMissed":  true,
+      "weeklyDigest":      true,
+      "paymentAlerts":     true
+    },
+    "slack": {
+      "meetingSummary":    true,
+      "deadlineReminder":  true,
+      "commitmentMissed":  true,
+      "dailyDigest":       false,
+      "personalDMs":       true
+    }
+  }
+}
+
+PATCH /notifications/preferences
+Update notification preferences.
+Auth:   Required
+
+Request Body (all fields optional, only send fields to update):
+{
+  "email": {
+    "meetingSummary":   boolean   optional
+    "deadlineReminder": boolean   optional
+    "commitmentMissed": boolean   optional
+    "weeklyDigest":     boolean   optional
+    "paymentAlerts":    boolean   optional
+  },
+  "slack": {
+    "meetingSummary":   boolean   optional
+    "deadlineReminder": boolean   optional
+    "commitmentMissed": boolean   optional
+    "dailyDigest":      boolean   optional
+    "personalDMs":      boolean   optional
+  }
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "email": { ...updated email preferences },
+    "slack": { ...updated slack preferences },
+    "updatedAt": "2026-05-12T10:00:00Z"
+  }
+}
+
+POST /notifications/test
+Send a test notification to verify setup.
+Auth:   Required
+
+Request Body:
+{
+  "channel": string   REQUIRED
+             → Which channel to test
+             → Allowed: "email" | "slack"
+
+  "type": string   REQUIRED
+          → Which notification type to test
+          → Allowed: "meeting_summary" | "deadline_reminder"
+                     "commitment_missed" | "weekly_digest"
+}
+
+Success Response 200:
+{
+  "success": true,
+  "data": {
+    "sent":    true,
+    "channel": "email",
+    "sentTo":  "ali@techflow.com",
+    "message": "Test email sent successfully"
+  }
+}
+
+Error Response 200 (sent:false):
+{
+  "success": true,
+  "data": {
+    "sent":    false,
+    "channel": "slack",
+    "error":   "Slack not connected. Please connect Slack in Settings > Integrations"
+  }
+}
+
+11. Webhook APIs
+
+Note: These endpoints are called by third-party services, not frontend.
+They use signature verification instead of JWT auth.
+
+POST /webhooks/recall
+Receive events from Recall.ai meeting bot.
+Auth:   Signature verification only
+        Header: X-Recall-Signature: sha256=<HMAC-SHA256>
+
+Events handled:
+
+EVENT: bot.joining_call
+{
+  "event": "bot.joining_call",
+  "data": {
+    "bot_id":      "bot_recall_abc123",
+    "meeting_url": "https://zoom.us/j/123456789"
+  }
+}
+→ Update meeting status: BOT_JOINING
+
+EVENT: bot.in_waiting_room
+{
+  "event": "bot.in_waiting_room",
+  "data": { "bot_id": "bot_recall_abc123" }
+}
+→ No status change (waiting for host to admit)
+
+EVENT: bot.recording_started
+{
+  "event": "bot.recording_started",
+  "data": { "bot_id": "bot_recall_abc123" }
+}
+→ Update meeting status: RECORDING, set startedAt
+
+EVENT: bot.done
+{
+  "event": "bot.done",
+  "data": {
+    "bot_id":     "bot_recall_abc123",
+    "meeting_url":"https://zoom.us/j/123456789",
+    "transcript": [
+      {
+        "speaker":     "Speaker 1",
+        "is_final":    true,
+        "words": [
+          { "text": "Good", "start_time": 5.1, "end_time": 5.4, "confidence": 0.98 }
+        ]
+      }
+    ],
+    "output_video": {
+      "status":      "done",
+      "data":        { "download_url": "https://..." }
+    }
+  }
+}
+→ Store transcript in MongoDB
+→ Push job to transcribe.queue
+→ Update meeting: endedAt, status: PROCESSING
+
+EVENT: bot.failed
+{
+  "event": "bot.failed",
+  "data": {
+    "bot_id": "bot_recall_abc123",
+    "reason": "Meeting ended before bot could join"
+  }
+}
+→ Update meeting status: FAILED
+→ Alert team via Slack/email
+
+Response 200 (always):
+{ "received": true }
+
+Response 400:
+{ "received": false, "error": "Invalid signature" }
+
+POST /webhooks/stripe
+Receive billing events from Stripe.
+Auth:   Signature verification only
+        Header: Stripe-Signature: t=1715000000,v1=<HMAC>
+
+Events handled:
+
+EVENT: checkout.session.completed
+→ First-time purchase: activate subscription, update team plan
+
+EVENT: customer.subscription.created
+{
+  "type": "customer.subscription.created",
+  "data": {
+    "object": {
+      "id":         "sub_abc123",
+      "customer":   "cus_xyz789",
+      "status":     "active",
+      "plan": { "id": "price_growth_monthly" },
+      "current_period_start": 1715000000,
+      "current_period_end":   1717678400
+    }
+  }
+}
+→ Update team plan in DB
+→ Reset monthly usage counters
+
+EVENT: customer.subscription.updated
+→ Plan changed (upgrade/downgrade): update DB
+
+EVENT: customer.subscription.deleted
+→ Subscription cancelled: downgrade team to FREE plan
+→ Send cancellation email to admin
+
+EVENT: invoice.payment_succeeded
+→ Send receipt email to admin
+→ Update subscription period dates
+
+EVENT: invoice.payment_failed
+{
+  "type": "invoice.payment_failed",
+  "data": {
+    "object": {
+      "customer":       "cus_xyz789",
+      "amount_due":     7900,
+      "attempt_count":  1,
+      "next_payment_attempt": 1715259600
+    }
+  }
+}
+→ Send payment failed warning email
+→ If attempt_count >= 3 → suspend account
+
+Response 200 (always):
+{ "received": true }
+
+POST /webhooks/jira
+Receive issue update events from Jira (reverse sync).
+Auth:   Jira webhook secret verification
+
+Events handled:
+
+EVENT: jira:issue_updated
+{
+  "webhookEvent":  "jira:issue_updated",
+  "issue": {
+    "id":     "10042",
+    "key":    "TECH-142",
+    "fields": {
+      "status":     { "name": "Done" },
+      "assignee":   { "emailAddress": "ahmed@techflow.com" },
+      "summary":    "Fix payment bug in checkout"
+    }
+  }
+}
+→ Find action_item where jiraIssueId = "TECH-142"
+→ If status = "Done" → mark action_item.completed = true
+→ Check if action item linked to commitment
+→ If yes → mark commitment FULFILLED
+→ Notify team via Slack + Socket.io
+
+Response 200:
+{ "received": true }
+
+12. Complete API Summary Table
+#   METHOD  ENDPOINT                                    AUTH        ROLE
+────────────────────────────────────────────────────────────────────────────────────
+
+AUTH
+1   POST    /auth/register                              Public      —
+2   POST    /auth/login                                 Public      —
+3   POST    /auth/logout                                Required    any
+4   POST    /auth/refresh                               Cookie      —
+5   GET     /auth/verify-email                          Public      —
+6   POST    /auth/resend-verification                   Public      —
+7   POST    /auth/forgot-password                       Public      —
+8   POST    /auth/reset-password                        Public      —
+9   GET     /auth/me                                    Required    any
+10  PATCH   /auth/me                                    Required    any
+11  POST    /auth/change-password                       Required    any
+12  GET     /auth/google                                Public      —
+13  GET     /auth/google/callback                       Public      —
+14  GET     /auth/github                                Public      —
+15  GET     /auth/github/callback                       Public      —
+16  GET     /auth/sessions                              Required    any
+17  DELETE  /auth/sessions/:sessionId                   Required    any
+
+TEAMS
+18  POST    /teams                                      Required    any
+19  GET     /teams/me                                   Required    any
+20  PATCH   /teams/me                                   Required    ADMIN+
+21  POST    /teams/me/invite                            Required    ADMIN+
+22  GET     /teams/me/members                           Required    any
+23  PATCH   /teams/me/members/:userId/role              Required    ADMIN+
+24  DELETE  /teams/me/members/:userId                   Required    ADMIN+
+
+MEETINGS
+25  POST    /meetings                                   Required    any
+26  GET     /meetings                                   Required    any
+27  GET     /meetings/:meetingId                        Required    any
+28  GET     /meetings/:meetingId/transcript             Required    any
+29  DELETE  /meetings/:meetingId                        Required    ADMIN+
+30  POST    /meetings/bot/add                           Required    any
+31  DELETE  /meetings/:meetingId/bot                    Required    any
+
+COMMITMENTS
+32  GET     /commitments                                Required    any
+33  GET     /commitments/my                             Required    any
+34  GET     /commitments/stats                          Required    MANAGER+
+35  GET     /commitments/:commitmentId                  Required    any
+36  PATCH   /commitments/:commitmentId/status           Required    any*
+
+ACTION ITEMS
+37  GET     /action-items                               Required    any
+38  PATCH   /action-items/:actionItemId                 Required    any
+39  POST    /action-items/:actionItemId/sync            Required    any
+
+ANALYTICS
+40  GET     /analytics/overview                         Required    MANAGER+
+41  GET     /analytics/members                          Required    MANAGER+
+42  GET     /analytics/trends                           Required    MANAGER+
+
+INTEGRATIONS
+43  GET     /integrations                               Required    any
+44  GET     /integrations/:provider/oauth-url           Required    ADMIN+
+45  POST    /integrations/:provider/callback            Required    ADMIN+
+46  PATCH   /integrations/:provider/settings            Required    ADMIN+
+47  POST    /integrations/:provider/test                Required    any
+48  DELETE  /integrations/:provider                     Required    ADMIN+
+49  GET     /integrations/calendar/events               Required    any
+
+BILLING
+50  GET     /billing/plans                              Public      —
+51  GET     /billing/subscription                       Required    any
+52  POST    /billing/checkout                           Required    ADMIN+
+53  POST    /billing/portal                             Required    ADMIN+
+54  GET     /billing/invoices                           Required    ADMIN+
+
+NOTIFICATIONS
+55  GET     /notifications/preferences                  Required    any
+56  PATCH   /notifications/preferences                  Required    any
+57  POST    /notifications/test                         Required    any
+
+WEBHOOKS (Signature auth, no JWT)
+58  POST    /webhooks/recall                            Signature   —
+59  POST    /webhooks/stripe                            Signature   —
+60  POST    /webhooks/jira                              Signature   —
+────────────────────────────────────────────────────────────────────────────────────
+Total: 60 endpoints
+
+* MEMBER can update own commitments only. MANAGER+ can update any.
+
+ROLE LEVELS:
+  any       → Any authenticated user (MEMBER, MANAGER, ADMIN, OWNER)
+  MANAGER+  → MANAGER, ADMIN, OWNER
+  ADMIN+    → ADMIN, OWNER only
+  Signature → Third-party webhook (no JWT, HMAC signature instead)
+
+Document: API-001 | Startup: Vocaply | Version: 1.0 | Total Endpoints: 60

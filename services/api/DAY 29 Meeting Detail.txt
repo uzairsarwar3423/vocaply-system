@@ -1,0 +1,57 @@
+DAY 29 — Meeting Detail Page: Overview Tab, Summary, Participants
+Goal
+First detail/drill-down page. Establishes the tabbed detail layout pattern (header + tab bar + tab content) that Commitments detail and future pages reuse. Today: Overview tab only (Transcript/Action Items/Commitments tabs are Days 30–31).
+Files to Create
+app/(dashboard)/meetings/[meetingId]/
+  layout.tsx                       ← RSC: fetch meeting once, tab bar shell, pass via context
+  page.tsx                         ← Overview tab (default route)
+  loading.tsx
+  error.tsx
+
+features/meetings/components/MeetingDetail/
+  MeetingDetailHeader.tsx          ← Title + status badge + platform + actions (Sheet trigger menu)
+  MeetingDetailTabs.tsx            ← Tab bar: Overview / Transcript / Action Items / Commitments
+  MeetingOverviewTab.tsx           ← Summary block + participants + timeline
+  MeetingSummaryBlock.tsx          ← AI summary bullets (plain text rendering, no chat UI)
+  MeetingParticipantsList.tsx      ← Avatar group + list (popover for "+N more")
+  MeetingTimeline.tsx              ← Vertical bot lifecycle events (scheduled→joining→recording→done)
+  MeetingDetailActionsMenu.tsx     ← DropdownMenu: Reprocess / Remove bot / Delete (role-gated)
+  BotStatusBanner.tsx              ← Sticky top banner when status = RECORDING (stub realtime, wired Day 39)
+
+shared/components/feedback/
+  ConfirmModal.tsx                 ← Reused for "Delete meeting" destructive confirm (AlertDialog-based)
+What Gets Built — Detail
+1. Shared Detail Layout via layout.tsx
+
+app/(dashboard)/meetings/[meetingId]/layout.tsx is an RSC that fetches the meeting once (server-side, cached per-request) and renders MeetingDetailHeader + MeetingDetailTabs + {children} — this means navigating between Overview/Transcript/Action Items/Commitments tabs (Days 30–31) never re-fetches the meeting shell, only the tab-specific content changes. This is the single biggest performance decision of the week and mirrors exactly how Linear's issue detail page avoids re-fetching the issue header when switching sub-tabs.
+Tabs are plain <Link>s styled as a tab bar (not a JS-state tab component) so each tab is a real route, deep-linkable, and uses Next.js's own route-level code splitting — Transcript tab (Day 30, virtualized list) never ships its JS bundle to someone only viewing Overview.
+
+2. MeetingDetailHeader
+
+Title (editable later, read-only today) + MeetingStatusBadge + MeetingPlatformIcon inline + scheduled/duration text.
+Right side: MeetingDetailActionsMenu — a DropdownMenu (kebab icon trigger) with role-gated items (Reprocess — ADMIN+, Remove bot, Delete — ADMIN+ via ConfirmModal/AlertDialog). This is the first "destructive action" pattern in the app — locked in here, reused everywhere (Commitments cancel, Team member remove, etc.).
+
+3. BotStatusBanner
+
+Conditionally rendered sticky banner directly under the header when status IN (BOT_JOINING, RECORDING): "● Recording live" text + pulsing dot (CSS animation, not JS), with a muted background strip — no gradient, no loud red. Today it reads static server data; Day 39 wires it to Socket.io for true live updates without a page refresh.
+
+4. MeetingOverviewTab
+
+MeetingSummaryBlock: renders the AI-generated 3–5 bullet summary as a plain bulleted list inside a Card — explicitly not styled as a "chat message" or AI-bubble (per "not look like ai" requirement) — just looks like structured meeting notes.
+MeetingParticipantsList: a row of overlapping Avatars (max 5 visible) + a "+N" trigger that opens a Popover listing remaining participants with name/email — standard dense participant-list pattern.
+MeetingTimeline: a compact vertical timeline (small dots + connecting line, Separator-adjacent styling) showing SCHEDULED → BOT_JOINING → RECORDING → PROCESSING → DONE with timestamps — gives users a debug-friendly, Linear-activity-log-style trail without needing a support ticket.
+
+5. Loading/Error
+
+loading.tsx skeleton matches header + tab bar + content skeleton exactly (header skeleton persists across tab loads since it's in the parent layout's Suspense boundary, only the tab content skeleton shows on tab switch).
+
+Components Installed/Used Today
+dropdown-menu, popover, avatar (group pattern), alert-dialog (for destructive confirm), separator, badge (reused).
+End-of-Day Checklist
+
+ Switching tabs does not re-fetch meeting header/title/status
+ Each tab is a real navigable URL (/meetings/:id, /meetings/:id/transcript, etc.)
+ Destructive actions (Delete) require confirm dialog, role-gated visibility
+ BotStatusBanner only shows for active recording statuses
+ Participants popover shows correctly for meetings with >5 attendees
+ 404/error state when meeting belongs to a different team (never leaks existence)

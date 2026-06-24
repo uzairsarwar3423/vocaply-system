@@ -1,0 +1,695 @@
+Day 18 — Webhooks + Bull Queue Setup + Transcript Worker
+
+Theme: The Async Engine — Meetings Process Without Blocking
+
+
+Recall.ai meeting khatam hone ke baad webhook bhejta hai. Woh webhook
+ek job queue mein dalta hai. Worker utha ke AI pipeline ko call karta
+hai. Sab kuch async hai — user ka request kabhi block nahi hota.
+Aaj yeh pura async engine build hoga: Bull queues, workers, aur
+Recall.ai webhook handler.
+
+
+
+
+Work Hours Breakdown (8 Hours)
+
+9:00 AM – 10:00 AM  → Bull queue client setup (5 queues defined)
+10:00 AM – 11:00 AM → Recall.ai webhook handler (signature verify + event routing)
+11:00 AM – 12:00 PM → transcribe.worker.ts (store transcript in MongoDB)
+12:00 PM – 1:00 PM  → Lunch break
+1:00 PM – 2:00 PM   → extract.worker.ts (scaffold — calls mock AI for now)
+2:00 PM – 3:00 PM   → notify.worker.ts (scaffold — filled Day 19)
+3:00 PM – 4:00 PM   → integrate.worker.ts + deadline.worker.ts (scaffolds)
+4:00 PM – 5:00 PM   → Stripe webhook (subscription events)
+5:00 PM – 5:30 PM   → BullBoard dashboard setup (job monitoring UI)
+5:30 PM – 6:00 PM   → End-to-end webhook test + checklist
+
+
+Bull Queue Setup
+
+queue.client.ts — Queue Definitions
+
+File: services/api/src/queues/queue.client.ts
+
+typescriptimport { Queue, Worker, QueueEvents } from 'bullmq'
+import { redis } from '../config/redis'
+import { logger } from '../config/logger'
+
+// Connection options for BullMQ (separate from main Redis client)
+const connection = {
+  host: process.env.REDIS_HOST ?? 'localhost',
+  port: parseInt(process.env.REDIS_PORT ?? '6379'),
+  password: process.env.REDIS_PASSWORD,
+}
+
+// ── QUEUE DEFINITIONS ────────────────────────────────────────────────────────
+
+// transcribe: Store Recall.ai transcript in MongoDB
+export const transcribeQueue = new Queue('transcribe', {
+  connection,
+  defaultJobOptions: {
+    attempts:    3,
+    backoff:     { type: 'exponential', delay: 10_000 },
+    removeOnComplete: { count: 100 },
+    removeOnFail:     { count: 50 },
+  },
+})
+
+// extract: Call AI pipeline → save commitments/actions to PostgreSQL
+export const extractQueue = new Queue('extract', {
+  connection,
+  defaultJobOptions: {
+    attempts:    3,
+    backoff:     { type: 'exponential', delay: 15_000 },
+    priority:    2,
+    removeOnComplete: { count: 100 },
+    removeOnFail:     { count: 50 },
+  },
+})
+
+// notify: Send email / Slack notifications
+export const notifyQueue = new Queue('notify', {
+  connection,
+  defaultJobOptions: {
+    attempts:    5,
+    backoff:     { type: 'exponential', delay: 5_000 },
+    priority:    3,
+    removeOnComplete: { count: 200 },
+    removeOnFail:     { count: 50 },
+  },
+})
+
+// integrate: Sync to Jira / Linear / Notion
+export const integrateQueue = new Queue('integrate', {
+  connection,
+  defaultJobOptions: {
+    attempts:    3,
+    backoff:     { type: 'exponential', delay: 20_000 },
+    priority:    4,
+    removeOnComplete: { count: 100 },
+    removeOnFail:     { count: 50 },
+  },
+})
+
+// deadline: Cron-based — check overdue commitments
+export const deadlineQueue = new Queue('deadline', {
+  connection,
+  defaultJobOptions: {
+    attempts: 2,
+    removeOnComplete: { count: 10 },
+    removeOnFail:     { count: 10 },
+  },
+})
+
+// Log queue events for observability
+const queues = [transcribeQueue, extractQueue, notifyQueue, integrateQueue, deadlineQueue]
+
+queues.forEach((q) => {
+  const events = new QueueEvents(q.name, { connection })
+  events.on('failed',    ({ jobId, failedReason }) => {
+    logger.error({ queue: q.name, jobId, failedReason }, 'Job failed')
+  })
+  events.on('completed', ({ jobId }) => {
+    logger.debug({ queue: q.name, jobId }, 'Job completed')
+  })
+})
+
+
+Job Payload Type Definitions
+
+File: services/api/src/queues/jobs/transcribe.job.ts
+
+typescriptexport interface TranscribeJobData {
+  meetingId:       string
+  teamId:          string
+  recallBotId:     string
+  rawTranscript:   RecallTranscriptTurn[]
+  videoUrl?:       string
+}
+
+File: services/api/src/queues/jobs/extract.job.ts
+
+typescriptexport interface ExtractJobData {
+  meetingId:        string
+  teamId:           string
+  mongoTranscriptId: string
+}
+
+File: services/api/src/queues/jobs/notify.job.ts
+
+typescriptexport type NotifyJobType =
+  | 'MEETING_PROCESSED'
+  | 'COMMITMENT_MISSED'
+  | 'DEADLINE_REMINDER'
+  | 'WEEKLY_DIGEST'
+
+export interface NotifyJobData {
+  type:          NotifyJobType
+  teamId:        string
+  meetingId?:    string
+  commitmentId?: string
+  ownerId?:      string
+  managerIds?:   string[]
+}
+
+
+Recall.ai Webhook Handler
+
+File: services/api/src/modules/webhooks/recall.webhook.ts
+
+typescriptimport { createHmac, timingSafeEqual } from 'crypto'
+import { Request, Response } from 'express'
+import { logger } from '../../config/logger'
+import { updateMeetingStatus } from '../meetings/meetings.service'
+import { transcribeQueue } from '../../queues/queue.client'
+import { mongoService } from '../../services/mongo.service'
+import { redis } from '../../config/redis'
+
+// ── SIGNATURE VERIFICATION ───────────────────────────────────────────────────
+
+function verifyRecallSignature(req: Request): void {
+  const signature = req.headers['x-recall-signature'] as string
+  if (!signature) {
+    throw new Error('Missing X-Recall-Signature header')
+  }
+
+  // rawBody must be preserved — configure Express before json() middleware for this route
+  const rawBody   = (req as any).rawBody as Buffer
+  const expected  = createHmac('sha256', process.env.RECALL_WEBHOOK_SECRET!)
+    .update(rawBody)
+    .digest('hex')
+
+  const sigBuf = Buffer.from(signature.replace('sha256=', ''))
+  const expBuf = Buffer.from(expected)
+
+  if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
+    throw new Error('Invalid Recall.ai webhook signature')
+  }
+}
+
+// ── WEBHOOK HANDLER ──────────────────────────────────────────────────────────
+
+export async function handleRecallWebhook(req: Request, res: Response): Promise<void> {
+  // 1. Verify signature FIRST — reject immediately if invalid
+  try {
+    verifyRecallSignature(req)
+  } catch {
+    logger.warn('Recall.ai webhook signature verification failed')
+    res.status(400).json({ received: false, error: 'Invalid signature' })
+    return
+  }
+
+  // 2. Acknowledge immediately — Recall.ai expects < 5s response
+  res.status(200).json({ received: true })
+
+  // 3. Process asynchronously (never block the HTTP response)
+  const { event, data } = req.body
+
+  // Idempotency check — Recall.ai may send duplicate events
+  const idempotencyKey = `webhook:processed:recall:${data.bot_id}:${event}`
+  const alreadyProcessed = await redis.exists(idempotencyKey)
+  if (alreadyProcessed) {
+    logger.info({ event, botId: data.bot_id }, 'Recall webhook already processed — skipping')
+    return
+  }
+  await redis.setex(idempotencyKey, 86400, '1')
+
+  // 4. Route event to handler
+  try {
+    switch (event) {
+      case 'bot.joining_call':
+        await handleBotJoining(data.bot_id)
+        break
+
+      case 'bot.in_waiting_room':
+        // No status change — just log. Bot waiting for host to admit.
+        logger.info({ botId: data.bot_id }, 'Bot in waiting room')
+        break
+
+      case 'bot.recording_started':
+        await handleRecordingStarted(data.bot_id)
+        break
+
+      case 'bot.done':
+        await handleBotDone(data)
+        break
+
+      case 'bot.failed':
+        await handleBotFailed(data.bot_id, data.reason)
+        break
+
+      default:
+        logger.warn({ event }, 'Unknown Recall.ai event — ignoring')
+    }
+  } catch (err) {
+    logger.error({ event, err }, 'Error processing Recall.ai webhook')
+    // Don't throw — response already sent. Log for investigation.
+  }
+}
+
+// ── EVENT HANDLERS ────────────────────────────────────────────────────────────
+
+async function handleBotJoining(botId: string): Promise<void> {
+  const meeting = await findMeetingByBotId(botId)
+  if (!meeting) return
+  await updateMeetingStatus(meeting.id, 'BOT_JOINING')
+
+  // Real-time: emit Socket.io event to team dashboard
+  const { getIO } = await import('../../realtime/socket.server')
+  getIO()?.to(`team:${meeting.teamId}`).emit('meeting:bot_joining', {
+    meetingId: meeting.id,
+  })
+}
+
+async function handleRecordingStarted(botId: string): Promise<void> {
+  const meeting = await findMeetingByBotId(botId)
+  if (!meeting) return
+  await updateMeetingStatus(meeting.id, 'RECORDING', { startedAt: new Date() })
+
+  const { getIO } = await import('../../realtime/socket.server')
+  getIO()?.to(`team:${meeting.teamId}`).emit('meeting:recording', {
+    meetingId: meeting.id,
+    startedAt: new Date().toISOString(),
+  })
+}
+
+async function handleBotDone(data: RecallBotDonePayload): Promise<void> {
+  const meeting = await findMeetingByBotId(data.bot_id)
+  if (!meeting) {
+    logger.error({ botId: data.bot_id }, 'bot.done received for unknown bot')
+    return
+  }
+
+  const now             = new Date()
+  const durationMinutes = meeting.startedAt
+    ? Math.round((now.getTime() - meeting.startedAt.getTime()) / 60000)
+    : 0
+
+  // 1. Update meeting: PROCESSING + timing
+  await updateMeetingStatus(meeting.id, 'PROCESSING', {
+    endedAt:         now,
+    durationMinutes,
+  })
+
+  // 2. Store raw transcript in MongoDB
+  const mongoTranscriptId = await mongoService.storeTranscript({
+    meeting_id:        meeting.id,
+    team_id:           meeting.teamId,
+    recall_bot_id:     data.bot_id,
+    platform:          meeting.platform.toLowerCase(),
+    raw_transcript:    data.transcript ?? [],
+    full_text:         buildFullText(data.transcript ?? []),
+    processing_status: 'pending',
+    created_at:        new Date(),
+  })
+
+  // 3. Save MongoDB reference on meeting
+  await prisma.meeting.update({
+    where: { id: meeting.id },
+    data:  { mongoTranscriptId },
+  })
+
+  // 4. Emit real-time event
+  const { getIO } = await import('../../realtime/socket.server')
+  getIO()?.to(`team:${meeting.teamId}`).emit('meeting:processing', {
+    meetingId: meeting.id,
+  })
+
+  // 5. Push to extract queue
+  await transcribeQueue.add('process-transcript', {
+    meetingId:        meeting.id,
+    teamId:           meeting.teamId,
+    mongoTranscriptId,
+  } satisfies ExtractJobData, {
+    priority: 2,
+  })
+}
+
+async function handleBotFailed(botId: string, reason: string): Promise<void> {
+  const meeting = await findMeetingByBotId(botId)
+  if (!meeting) return
+  await updateMeetingStatus(meeting.id, 'FAILED', { processingError: reason })
+
+  // Notify team via Socket.io
+  const { getIO } = await import('../../realtime/socket.server')
+  getIO()?.to(`team:${meeting.teamId}`).emit('meeting:failed', {
+    meetingId: meeting.id,
+    reason,
+  })
+
+  // Queue notification to team
+  await notifyQueue.add('meeting-failed', {
+    type:      'MEETING_FAILED' as any,
+    teamId:    meeting.teamId,
+    meetingId: meeting.id,
+  })
+}
+
+// ── HELPERS ──────────────────────────────────────────────────────────────────
+
+async function findMeetingByBotId(botId: string) {
+  return prisma.meeting.findFirst({
+    where: { recallBotId: botId },
+  })
+}
+
+function buildFullText(transcript: RecallTranscriptTurn[]): string {
+  return transcript
+    .map((t) => `${t.speaker_name ?? t.speaker_tag} [${formatTime(t.start_time)}]: ${t.text}`)
+    .join('\n')
+}
+
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60)
+  const s = Math.floor(seconds % 60)
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+}
+
+
+transcribe.worker.ts — Store Transcript
+
+File: services/api/src/queues/workers/transcribe.worker.ts
+
+typescriptimport { Worker, Job } from 'bullmq'
+import { logger } from '../../config/logger'
+import { mongoService } from '../../services/mongo.service'
+import { extractQueue } from '../queue.client'
+import { prisma } from '../../db/client'
+import { ExtractJobData } from '../jobs/extract.job'
+
+export const transcribeWorker = new Worker<ExtractJobData>(
+  'transcribe',
+  async (job: Job<ExtractJobData>) => {
+    const { meetingId, teamId, mongoTranscriptId } = job.data
+    logger.info({ jobId: job.id, meetingId }, 'transcribe.worker: processing')
+
+    // Verify transcript exists in MongoDB
+    const transcript = await mongoService.findTranscript(mongoTranscriptId)
+    if (!transcript) {
+      throw new Error(`Transcript not found in MongoDB: ${mongoTranscriptId}`)
+    }
+
+    // Fetch participants from PostgreSQL for speaker mapping
+    const participants = await prisma.meetingParticipant.findMany({
+      where: { meetingId },
+    })
+
+    // Build speaker tag → user mapping
+    const speakerMap: Record<string, { userId?: string; name: string; email?: string }> = {}
+    for (const p of participants) {
+      if (p.speakerTag) {
+        speakerMap[p.speakerTag] = {
+          userId: p.userId ?? undefined,
+          name:   p.name,
+          email:  p.email ?? undefined,
+        }
+      }
+    }
+
+    // Enrich transcript turns with resolved speaker info
+    const enrichedTurns = transcript.raw_transcript.map((turn: any) => ({
+      ...turn,
+      speaker_user_id: speakerMap[turn.speaker_tag]?.userId ?? null,
+      speaker_name:    speakerMap[turn.speaker_tag]?.name ?? turn.speaker_tag,
+      speaker_email:   speakerMap[turn.speaker_tag]?.email ?? null,
+    }))
+
+    // Update MongoDB with enriched transcript
+    await mongoService.updateTranscript(mongoTranscriptId, {
+      raw_transcript:    enrichedTurns,
+      processing_status: 'ready_for_extraction',
+    })
+
+    // Push to extract queue
+    await extractQueue.add(
+      'extract-commitments',
+      { meetingId, teamId, mongoTranscriptId } satisfies ExtractJobData,
+      { priority: 2 }
+    )
+
+    logger.info({ jobId: job.id, meetingId }, 'transcribe.worker: done, pushed to extract queue')
+  },
+  {
+    connection: { host: process.env.REDIS_HOST, port: parseInt(process.env.REDIS_PORT ?? '6379') },
+    concurrency: 5,
+  }
+)
+
+transcribeWorker.on('failed', (job, err) => {
+  logger.error({ jobId: job?.id, err }, 'transcribe.worker: job failed')
+})
+
+
+extract.worker.ts — AI Extraction (Scaffold for now)
+
+File: services/api/src/queues/workers/extract.worker.ts
+
+Full implementation comes Day 46–55 (AI Pipeline phase). Today: scaffold that calls a mock and saves placeholder data.
+
+typescriptexport const extractWorker = new Worker<ExtractJobData>(
+  'extract',
+  async (job: Job<ExtractJobData>) => {
+    const { meetingId, teamId, mongoTranscriptId } = job.data
+    logger.info({ jobId: job.id, meetingId }, 'extract.worker: processing (mock mode)')
+
+    // MOCK: In production this calls FastAPI AI pipeline
+    // Real implementation: Day 46–55
+    const mockResult = {
+      commitments: [],
+      actionItems: [],
+      decisions:   [],
+      blockers:    [],
+      summary:     'AI extraction pending — pipeline not yet configured.',
+    }
+
+    // Update meeting: DONE status + summary
+    await prisma.meeting.update({
+      where: { id: meetingId },
+      data:  {
+        status:                 'DONE',
+        summary:                mockResult.summary,
+        processingCompletedAt:  new Date(),
+      },
+    })
+
+    // Update MongoDB with extraction result
+    await mongoService.updateTranscript(mongoTranscriptId, {
+      ai_extraction:           mockResult,
+      processing_status:       'done',
+      processing_completed_at: new Date(),
+    })
+
+    // Emit Socket.io event
+    const { getIO } = await import('../../realtime/socket.server')
+    getIO()?.to(`team:${teamId}`).emit('meeting:processed', {
+      meetingId,
+      summary:         mockResult.summary,
+      commitmentCount: 0,
+      actionItemCount: 0,
+    })
+
+    // Queue notification
+    await notifyQueue.add('meeting-processed', {
+      type:      'MEETING_PROCESSED',
+      teamId,
+      meetingId,
+    })
+
+    logger.info({ jobId: job.id, meetingId }, 'extract.worker: done')
+  },
+  {
+    connection: { host: process.env.REDIS_HOST, port: parseInt(process.env.REDIS_PORT ?? '6379') },
+    concurrency: 3,
+  }
+)
+
+
+Stripe Webhook Handler (Subscription Events)
+
+File: services/api/src/modules/webhooks/stripe.webhook.ts
+
+typescriptimport Stripe from 'stripe'
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-06-20' })
+
+export async function handleStripeWebhook(req: Request, res: Response): Promise<void> {
+  const sig = req.headers['stripe-signature'] as string
+  let event: Stripe.Event
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      (req as any).rawBody,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET!
+    )
+  } catch {
+    res.status(400).json({ received: false, error: 'Invalid Stripe signature' })
+    return
+  }
+
+  // Idempotency
+  const idempotencyKey = `webhook:processed:stripe:${event.id}`
+  if (await redis.exists(idempotencyKey)) {
+    res.status(200).json({ received: true })
+    return
+  }
+  await redis.setex(idempotencyKey, 86400, '1')
+
+  res.status(200).json({ received: true })
+
+  // Handle events asynchronously
+  const obj = event.data.object as any
+
+  switch (event.type) {
+    case 'checkout.session.completed':
+      await handleCheckoutCompleted(obj)
+      break
+
+    case 'customer.subscription.updated':
+    case 'customer.subscription.created':
+      await handleSubscriptionUpdated(obj)
+      break
+
+    case 'customer.subscription.deleted':
+      await handleSubscriptionCancelled(obj)
+      break
+
+    case 'invoice.payment_succeeded':
+      await handlePaymentSucceeded(obj)
+      break
+
+    case 'invoice.payment_failed':
+      await handlePaymentFailed(obj)
+      break
+  }
+}
+
+async function handleSubscriptionUpdated(sub: Stripe.Subscription): Promise<void> {
+  // Map Stripe price ID to Vocaply plan
+  const priceId = sub.items.data[0]?.price.id ?? ''
+  const plan    = mapPriceIdToPlan(priceId)
+
+  await prisma.team.update({
+    where: { stripeCustomerId: sub.customer as string },
+    data:  {
+      plan,
+      stripeSubId:        sub.id,
+      billingCycleStart:  new Date(sub.current_period_start * 1000),
+      billingCycleEnd:    new Date(sub.current_period_end   * 1000),
+    },
+  })
+
+  // Reset meetings_used counter on new billing cycle
+  await prisma.team.update({
+    where: { stripeCustomerId: sub.customer as string },
+    data:  { meetingsUsed: 0 },
+  })
+
+  // Invalidate plan cache
+  const team = await prisma.team.findFirst({ where: { stripeCustomerId: sub.customer as string } })
+  if (team) await redis.del(`cache:team:plan:${team.id}`)
+}
+
+async function handleSubscriptionCancelled(sub: Stripe.Subscription): Promise<void> {
+  await prisma.team.update({
+    where: { stripeSubId: sub.id },
+    data:  { plan: 'FREE', stripeSubId: null },
+  })
+}
+
+
+BullBoard Setup (Job Monitoring UI)
+
+File: services/api/src/config/bull-board.ts
+
+typescriptimport { createBullBoard } from '@bull-board/api'
+import { BullMQAdapter }   from '@bull-board/api/bullMQAdapter'
+import { ExpressAdapter }  from '@bull-board/express'
+import { transcribeQueue, extractQueue, notifyQueue, integrateQueue, deadlineQueue } from '../queues/queue.client'
+
+export function setupBullBoard(app: Express) {
+  if (process.env.NODE_ENV === 'production') return  // Disable in production by default
+
+  const serverAdapter = new ExpressAdapter()
+  serverAdapter.setBasePath('/admin/queues')
+
+  createBullBoard({
+    queues: [
+      new BullMQAdapter(transcribeQueue),
+      new BullMQAdapter(extractQueue),
+      new BullMQAdapter(notifyQueue),
+      new BullMQAdapter(integrateQueue),
+      new BullMQAdapter(deadlineQueue),
+    ],
+    serverAdapter,
+  })
+
+  // Simple password protection for dev
+  app.use('/admin/queues', (req, res, next) => {
+    const auth = req.headers.authorization
+    if (auth !== `Bearer ${process.env.BULL_BOARD_SECRET ?? 'dev-secret'}`) {
+      res.status(401).send('Unauthorized')
+      return
+    }
+    next()
+  }, serverAdapter.getRouter())
+}
+
+
+Files to Create
+
+services/api/src/queues/queue.client.ts
+services/api/src/queues/jobs/transcribe.job.ts
+services/api/src/queues/jobs/extract.job.ts
+services/api/src/queues/jobs/notify.job.ts
+services/api/src/queues/jobs/integrate.job.ts
+services/api/src/queues/jobs/deadline.job.ts
+services/api/src/queues/workers/transcribe.worker.ts
+services/api/src/queues/workers/extract.worker.ts
+services/api/src/queues/workers/notify.worker.ts      ← scaffold
+services/api/src/queues/workers/integrate.worker.ts   ← scaffold
+services/api/src/queues/workers/deadline.worker.ts    ← scaffold
+services/api/src/modules/webhooks/recall.webhook.ts
+services/api/src/modules/webhooks/stripe.webhook.ts
+services/api/src/modules/webhooks/webhooks.routes.ts
+services/api/src/modules/webhooks/webhooks.validator.ts
+services/api/src/services/mongo.service.ts
+services/api/src/config/bull-board.ts
+
+
+Day 18 End-of-Day Checklist
+
+BULL QUEUES:
+  [ ] All 5 queues defined and connecting to Redis
+  [ ] BullBoard visible at localhost:4000/admin/queues
+  [ ] transcribe queue shows jobs in BullBoard UI
+
+RECALL WEBHOOK:
+  [ ] POST /webhooks/recall with invalid signature → 400
+  [ ] POST /webhooks/recall with valid signature → 200 immediately
+  [ ] bot.joining_call → meeting status = BOT_JOINING in DB
+  [ ] bot.recording_started → meeting status = RECORDING + startedAt set
+  [ ] bot.done → meeting status = PROCESSING + transcript in MongoDB
+  [ ] bot.done → job visible in transcribe queue in BullBoard
+  [ ] bot.failed → meeting status = FAILED + processingError set
+  [ ] Duplicate event (same botId + event) → idempotency skip log
+
+TRANSCRIBE WORKER:
+  [ ] Worker picks up job from transcribe queue
+  [ ] Speaker map built from meeting_participants table
+  [ ] Enriched transcript saved to MongoDB
+  [ ] Job pushed to extract queue
+  [ ] Worker logs: "transcribe.worker: done, pushed to extract queue"
+
+EXTRACT WORKER (mock):
+  [ ] Worker picks up job from extract queue
+  [ ] Meeting status updated to DONE
+  [ ] MongoDB transcript.processing_status = 'done'
+  [ ] Socket.io event emitted: meeting:processed
+  [ ] Job pushed to notify queue
+
+STRIPE WEBHOOK:
+  [ ] POST /webhooks/stripe with invalid signature → 400
+  [ ] customer.subscription.updated → team.plan updated in DB
+  [ ] customer.subscription.deleted → team.plan = 'FREE'

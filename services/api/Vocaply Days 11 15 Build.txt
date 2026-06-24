@@ -1,0 +1,1673 @@
+Vocaply — Days 11–15 Build Plan
+
+
+Post-Landing Page | Backend Foundation + Core App Shell
+Stack: Next.js 14 · Node.js Express · PostgreSQL (Prisma) · Redis · TypeScript
+Document: BUILD-PLAN-DAYS-11-15 | June 2026
+
+
+
+
+Context: Where We Are
+
+Landing page (Days 1–10) is complete. All 20 sections built, animations done, deployed to Vercel.
+
+What exists right now:
+
+
+✅ Monorepo (Turborepo) — all packages wired
+✅ Design system — tokens, Tailwind, globals.css
+✅ UI Kit primitives — Button, Input, Badge, Card, Skeleton
+✅ Landing page — all 20 sections, SEO, analytics
+✅ Docker Compose — PostgreSQL + MongoDB + Redis running locally
+✅ Express API scaffold (empty — no routes)
+✅ FastAPI AI pipeline scaffold (health endpoint only)
+✅ Shared types package skeleton
+
+
+What does NOT exist yet:
+
+
+❌ Database schema (Prisma migrations)
+❌ Auth system (any of it)
+❌ Any API routes
+❌ Dashboard UI
+❌ Any business logic
+
+
+
+5-Day Overview
+
+Day 11 → Database Schema + Prisma + Seeds
+Day 12 → Backend Foundation (Express middleware chain, env, errors)
+Day 13 → Auth API — Register, Login, Logout, JWT, Tokens
+Day 14 → Auth API — Email Verify, OAuth Google, Password Reset, Sessions
+Day 15 → Auth Frontend — Login/Register UI, AuthProvider, Protected Routes
+
+
+Day 11 — Database Schema + Prisma Setup
+
+Theme: The Foundation of Everything — Schema First
+
+
+Agar schema galat hai, baaki sab galat hoga. Aaj koi UI nahi, koi API nahi.
+Sirf ek cheez: production-ready Prisma schema likh kar PostgreSQL mein migrate karo.
+Har table, har column, har index, har relation — sab aaj decide hoga.
+
+
+
+
+Work Hours Breakdown (8 Hours)
+
+9:00 AM – 10:00 AM  → Prisma installation + Supabase/local PostgreSQL connection
+10:00 AM – 12:00 PM → Full schema.prisma — all 15 models + enums
+12:00 PM – 1:00 PM  → Lunch break
+1:00 PM – 2:30 PM   → Run prisma migrate dev (initial migration)
+2:30 PM – 3:30 PM   → MongoDB client setup (mongo.client.ts)
+3:30 PM – 4:30 PM   → Redis connection (ioredis + config)
+4:30 PM – 5:30 PM   → Seed file (dev data: 1 team, 3 users, 3 meetings, 5 commitments)
+5:30 PM – 6:00 PM   → Verify all connections + checklist
+
+
+What to Build
+
+1. Prisma Setup
+
+Install and configure Prisma:
+
+bash# Inside services/api/
+pnpm add prisma @prisma/client
+npx prisma init --datasource-provider postgresql
+
+Set DATABASE_URL in services/api/.env:
+
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/vocaply_dev"
+DIRECT_URL="postgresql://postgres:postgres@localhost:5432/vocaply_dev"
+
+2. schema.prisma — Full Production Schema
+
+Location: services/api/prisma/schema.prisma
+
+All 9 enums to define:
+
+prismaenum UserRole { OWNER ADMIN MANAGER MEMBER }
+enum PlanType { FREE STARTER GROWTH BUSINESS ENTERPRISE }
+enum PlatformType { ZOOM GOOGLE_MEET TEAMS WEBEX MANUAL }
+enum MeetingStatus { SCHEDULED BOT_JOINING RECORDING PROCESSING DONE FAILED CANCELLED }
+enum CommitmentStatus { PENDING FULFILLED MISSED DEFERRED CANCELLED }
+enum PriorityLevel { LOW MEDIUM HIGH URGENT }
+enum TeamProvider { JIRA LINEAR SLACK NOTION }
+enum CalendarProvider { GOOGLE_CALENDAR OUTLOOK_CALENDAR }
+enum UsageEventType { MEETING_PROCESSED AI_EXTRACTION INTEGRATION_SYNC }
+
+All 15 models to define:
+
+ModelKey FieldsPurposeUserid, email, name, passwordHash, role, teamId, googleId, githubIdAll user accountsRefreshTokenuserId, tokenHash, expiresAt, ipAddress, userAgentJWT refresh tokensEmailVerificationTokenuserId, tokenHash, expiresAtEmail verify flowsPasswordResetTokenuserId, tokenHash, expiresAt, usedAtPassword resetTeamid, name, slug, plan, meetingsUsed, settings (JSONB)Billing unitMeetingteamId, platform, meetingUrl, recallBotId, status, scheduledAtBot trackingMeetingParticipantmeetingId, userId, name, email, speakerTagSpeaker mappingCommitmentteamId, meetingId, ownerId, text, normalizedText, dueDate, status, confidenceScoreTHE CORE TABLEActionItemteamId, meetingId, assigneeId, text, priority, completed, jiraIssueIdTask trackingDecisionmeetingId, teamId, text, madeByMeeting decisionsBlockermeetingId, teamId, text, affectedUser, resolvedBlockersTeamIntegrationteamId, provider, accessToken (encrypted), metadata (JSONB)OAuth tokensUserIntegrationuserId, provider, accessToken (encrypted), calendarIdCalendar accessSubscriptionteamId, stripeSubscriptionId, plan, status, currentPeriodEndStripe billingUsageEventteamId, type, quantity, metadata (JSONB), occurredAtQuota tracking
+
+Critical indexes to add on Commitment (most queried table):
+
+prisma@@index([teamId, status])
+@@index([ownerId])
+@@index([meetingId])
+@@index([teamId, dueDate])
+
+Critical partial indexes (add in migration SQL):
+
+sql-- For cron job: find overdue PENDING commitments
+CREATE INDEX idx_commitments_overdue
+  ON commitments(team_id, due_date)
+  WHERE status = 'PENDING' AND due_date IS NOT NULL;
+
+3. Prisma Client Singleton
+
+File: services/api/src/db/client.ts
+
+typescriptimport { PrismaClient } from '@prisma/client'
+
+const globalForPrisma = global as unknown as { prisma: PrismaClient }
+
+export const prisma =
+  globalForPrisma.prisma ||
+  new PrismaClient({
+    log: process.env.NODE_ENV === 'development'
+      ? ['query', 'error', 'warn']
+      : ['error'],
+  })
+
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
+
+4. MongoDB Client
+
+File: services/api/src/db/mongo.client.ts
+
+typescriptimport { MongoClient, Db } from 'mongodb'
+
+let client: MongoClient
+let db: Db
+
+export async function connectMongoDB(): Promise<Db> {
+  if (db) return db
+  client = new MongoClient(process.env.MONGODB_URL!)
+  await client.connect()
+  db = client.db('vocaply')
+  return db
+}
+
+export function getMongoDB(): Db {
+  if (!db) throw new Error('MongoDB not connected. Call connectMongoDB() first.')
+  return db
+}
+
+5. Redis Connection
+
+File: services/api/src/config/redis.ts
+
+typescriptimport Redis from 'ioredis'
+
+export const redis = new Redis(process.env.REDIS_URL!, {
+  maxRetriesPerRequest: 3,
+  retryStrategy: (times) => Math.min(times * 50, 2000),
+  lazyConnect: true,
+})
+
+redis.on('error', (err) => {
+  console.error('Redis connection error:', err)
+})
+
+6. Seed File
+
+File: services/api/prisma/seed.ts
+
+Create realistic dev data:
+
+
+1 team: TechFlow Engineering, GROWTH plan, slug techflow-eng
+3 users: Ali (MANAGER), Sara (MEMBER), Ahmed (MEMBER) — all with password Test@1234
+3 meetings: Monday standup (DONE), Sprint review (DONE), Wednesday standup (SCHEDULED)
+6 commitments: Mix of PENDING, FULFILLED, MISSED statuses
+4 action items: Mix of completed and incomplete
+
+
+Run with: npx prisma db seed
+
+
+Files Created Today
+
+services/api/prisma/schema.prisma          ← FULL 15-table schema
+services/api/prisma/seed.ts                ← Dev seed data
+services/api/prisma/migrations/            ← Auto-generated migration
+services/api/src/db/client.ts             ← Prisma singleton
+services/api/src/db/mongo.client.ts       ← MongoDB connection
+services/api/src/config/redis.ts          ← Redis connection
+services/api/src/config/env.ts            ← Zod env validation
+
+
+Day 11 End-of-Day Checklist
+
+SCHEMA:
+  [ ] prisma migrate dev --name init runs without errors
+  [ ] All 15 tables visible in psql: \dt
+  [ ] All 9 enums created
+  [ ] Indexes created (verify with \d commitments)
+
+CONNECTIONS:
+  [ ] prisma.$connect() succeeds
+  [ ] MongoDB connection test: db.listCollections() works
+  [ ] Redis ping returns PONG
+  [ ] env.ts validation: start fails if DATABASE_URL missing
+
+SEED:
+  [ ] npx prisma db seed runs without errors
+  [ ] psql: SELECT COUNT(*) FROM users; → 3
+  [ ] psql: SELECT COUNT(*) FROM commitments; → 6
+  [ ] Prisma Studio (npx prisma studio) shows all tables with data
+
+
+Day 12 — Backend Foundation (Express Middleware Chain)
+
+Theme: The Plumbing — Every Request Goes Through Here
+
+
+Koi feature abhi bhi nahi banega. Aaj sirf middleware chain complete hogi —
+woh sab jo har ek API request se guzregi. Error handler, logger, rate limiter,
+validate — ek baar sahi banao, phir kabhi dobara mat chhuona.
+
+
+
+
+Work Hours Breakdown (8 Hours)
+
+9:00 AM – 10:00 AM  → Error class hierarchy + error middleware
+10:00 AM – 11:00 AM → Request logger (Pino) + response helpers
+11:00 AM – 12:00 PM → Rate limiter (Redis sliding window, Lua script)
+12:00 PM – 1:00 PM  → Lunch break
+1:00 PM – 2:00 PM   → Validate middleware (Zod) + async handler wrapper
+2:00 PM – 3:00 PM   → Auth middleware scaffold (empty — filled Day 13)
+3:00 PM – 4:00 PM   → app.ts — full middleware chain wired in correct order
+4:00 PM – 5:00 PM   → Pagination utility (cursor encode/decode)
+5:00 PM – 5:30 PM   → Graceful shutdown in server.ts
+5:30 PM – 6:00 PM   → Postman/curl test + checklist
+
+
+What to Build
+
+1. Error Class Hierarchy
+
+File: services/api/src/utils/errors.ts
+
+typescriptexport class AppError extends Error {
+  constructor(
+    public readonly code: string,
+    public readonly statusCode: number,
+    message: string,
+    public readonly details?: Record<string, unknown>
+  ) {
+    super(message)
+    this.name = 'AppError'
+  }
+}
+
+export class UnauthorizedError extends AppError {
+  constructor(code: string, message: string, details?: Record<string, unknown>) {
+    super(code, 401, message, details)
+  }
+}
+
+export class ForbiddenError extends AppError {
+  constructor(message: string, details?: Record<string, unknown>) {
+    super('FORBIDDEN', 403, message, details)
+  }
+}
+
+export class NotFoundError extends AppError {
+  constructor(resource: string, id?: string) {
+    super('NOT_FOUND', 404, `${resource}${id ? ` '${id}'` : ''} not found`)
+  }
+}
+
+export class DuplicateError extends AppError {
+  constructor(message: string, details?: Record<string, unknown>) {
+    super('DUPLICATE', 409, message, details)
+  }
+}
+
+export class ValidationError extends AppError {
+  constructor(fields: Record<string, string>) {
+    super('VALIDATION_ERROR', 422, 'Validation failed', { fields })
+  }
+}
+
+export class PlanLimitError extends AppError {
+  constructor(resource: string, used: number, limit: number, upgradeUrl: string) {
+    super('PLAN_LIMIT', 402, `${resource} limit reached (${used}/${limit})`, {
+      used, limit, upgradeUrl
+    })
+  }
+}
+
+export class RateLimitError extends AppError {
+  constructor(message: string) {
+    super('RATE_LIMITED', 429, message)
+  }
+}
+
+export class IntegrationError extends AppError {
+  constructor(provider: string, message: string) {
+    super('INTEGRATION_ERROR', 502, `${provider} integration error: ${message}`)
+  }
+}
+
+2. Response Helpers
+
+File: services/api/src/utils/response.ts
+
+typescriptexport function success<T>(data: T, meta?: PaginationMeta) {
+  return { success: true, data, ...(meta && { meta }) }
+}
+
+export function error(code: string, message: string, details?: Record<string, unknown>) {
+  return { success: false, error: { code, message, ...(details && { details }) } }
+}
+
+3. Async Handler Wrapper
+
+File: services/api/src/utils/async-handler.ts
+
+typescriptimport { Request, Response, NextFunction } from 'express'
+
+export function asyncHandler(
+  fn: (req: Request, res: Response, next: NextFunction) => Promise<unknown>
+) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    fn(req, res, next).catch(next)
+  }
+}
+
+4. Pino Request Logger
+
+File: services/api/src/middleware/request-logger.middleware.ts
+
+Logs every request with: method, path, statusCode, latencyMs, userId, teamId, ip.
+Uses Pino for structured JSON logs. In development, uses pino-pretty for readable output.
+
+5. Rate Limiter (Redis Sliding Window)
+
+File: services/api/src/middleware/rate-limit.middleware.ts
+
+Implements atomic sliding window using Lua script (prevents race conditions):
+
+IP-based:   100 req / 60 sec → ratelimit:ip:{ip}
+User-based: 200 req / 60 sec → ratelimit:api:{userId}
+Login:        5 req / 15 min → ratelimit:login:{sha256(email)}
+
+Sets response headers: X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset
+
+6. Validate Middleware (Zod)
+
+File: services/api/src/middleware/validate.middleware.ts
+
+typescriptimport { AnyZodObject } from 'zod'
+
+export function validate(schema: AnyZodObject) {
+  return asyncHandler(async (req, _res, next) => {
+    const result = schema.safeParse(req.body)
+    if (!result.success) {
+      const fields: Record<string, string> = {}
+      result.error.errors.forEach((e) => {
+        fields[e.path.join('.')] = e.message
+      })
+      throw new ValidationError(fields)
+    }
+    req.body = result.data  // Sanitized + coerced data
+    next()
+  })
+}
+
+7. Global Error Handler
+
+File: services/api/src/middleware/error.middleware.ts
+
+Handles:
+
+
+AppError subclasses → structured response with correct status code
+PrismaClientKnownRequestError P2002 → 409 DUPLICATE
+PrismaClientKnownRequestError P2025 → 404 NOT_FOUND
+ZodError → 422 VALIDATION_ERROR with field map
+Unknown errors → 500 INTERNAL_ERROR (masked in production)
+
+
+8. app.ts — Middleware Chain
+
+File: services/api/src/app.ts
+
+Exact order (ORDER MATTERS):
+
+1.  cors()
+2.  helmet()
+3.  express.json({ limit: '10mb' })
+4.  cookieParser()
+5.  requestLogger()          ← Pino request log
+6.  ipRateLimiter()          ← 100 req/min per IP
+7.  ─── Routes registered here ───
+8.  error.middleware         ← ALWAYS LAST
+
+9. server.ts — Graceful Shutdown
+
+File: services/api/src/server.ts
+
+typescriptconst server = app.listen(PORT, () => {
+  logger.info(`API server running on port ${PORT}`)
+})
+
+// Graceful shutdown: drain in-flight requests before exit
+process.on('SIGTERM', async () => {
+  server.close(async () => {
+    await prisma.$disconnect()
+    redis.disconnect()
+    process.exit(0)
+  })
+})
+
+10. Pagination Utility
+
+File: services/api/src/utils/pagination.ts
+
+typescript// Encode cursor: base64url({ id, createdAt })
+export function encodeCursor(id: string, createdAt: Date): string {
+  return Buffer.from(JSON.stringify({ id, createdAt: createdAt.toISOString() }))
+    .toString('base64url')
+}
+
+// Decode cursor: base64url → { id, createdAt }
+export function decodeCursor(cursor: string): { id: string; createdAt: Date } {
+  const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
+  return { id: decoded.id, createdAt: new Date(decoded.createdAt) }
+}
+
+export function buildPaginationMeta(
+  items: unknown[],
+  limit: number,
+  getCursorFields: (item: unknown) => { id: string; createdAt: Date }
+) {
+  const hasMore = items.length > limit
+  const data = items.slice(0, limit)
+  const nextCursor = hasMore
+    ? encodeCursor(...Object.values(getCursorFields(data[data.length - 1])) as [string, Date])
+    : null
+  return { data, meta: { hasMore, nextCursor, count: data.length } }
+}
+
+
+Files Created Today
+
+services/api/src/utils/errors.ts
+services/api/src/utils/response.ts
+services/api/src/utils/async-handler.ts
+services/api/src/utils/pagination.ts
+services/api/src/utils/date.ts
+services/api/src/config/logger.ts
+services/api/src/config/cors.ts
+services/api/src/middleware/request-logger.middleware.ts
+services/api/src/middleware/rate-limit.middleware.ts
+services/api/src/middleware/validate.middleware.ts
+services/api/src/middleware/error.middleware.ts
+services/api/src/middleware/auth.middleware.ts    ← scaffold only
+services/api/src/middleware/tenant.middleware.ts  ← scaffold only
+services/api/src/app.ts                           ← UPDATED with full chain
+services/api/src/server.ts                        ← UPDATED with graceful shutdown
+
+
+Day 12 End-of-Day Checklist
+
+ERRORS:
+  [ ] AppError and all subclasses compile with no TS errors
+  [ ] error.middleware catches AppError → returns correct status + code
+  [ ] error.middleware catches Prisma P2002 → 409 DUPLICATE
+  [ ] Unknown error returns 500 (message masked in production)
+
+MIDDLEWARE:
+  [ ] Request logger: every request logs method + path + status + latency
+  [ ] Rate limiter: 6th login attempt with same email → 429
+  [ ] Rate limiter: X-RateLimit-* headers present on all responses
+  [ ] validate(): invalid body → 422 with field-level errors
+  [ ] validate(): valid body → req.body has sanitized data
+
+APP:
+  [ ] curl http://localhost:4000/health → 200 { status: "ok" }
+  [ ] curl http://localhost:4000/unknown → 404 NOT_FOUND
+  [ ] curl with malformed JSON body → 400 (Express default)
+  [ ] SIGTERM test: kill signal triggers graceful shutdown log
+
+
+Day 13 — Auth API Part 1 (Register, Login, Logout, JWT)
+
+Theme: The Most Critical Code in the Codebase
+
+
+Auth bugs = security incidents. Aaj jo likhein ge woh 100% sahi hona chahiye.
+Register flow, login flow with brute force protection, JWT issuance,
+refresh token rotation — sab kuch production-grade. No shortcuts.
+
+
+
+
+Work Hours Breakdown (8 Hours)
+
+9:00 AM – 10:30 AM  → Auth repository (all DB queries for auth)
+10:30 AM – 12:00 PM → Auth service — register flow (complete)
+12:00 PM – 1:00 PM  → Lunch break
+1:00 PM – 2:30 PM   → Auth service — login flow with brute force protection
+2:30 PM – 3:30 PM   → JWT helpers — generateAccessToken, generateRefreshToken
+3:30 PM – 4:30 PM   → Auth controller + routes (register, login, logout)
+4:30 PM – 5:00 PM   → Resend email setup (verification email template)
+5:00 PM – 5:30 PM   → Auth middleware — requireAuth (JWT verify)
+5:30 PM – 6:00 PM   → Postman test all 3 endpoints + checklist
+
+
+What to Build
+
+Architecture: Controller → Service → Repository
+
+Every auth operation follows this pattern strictly:
+
+
+Controller: reads req, calls service, writes res. Zero business logic.
+Service: all business logic. Orchestrates repository calls. Throws AppError subclasses.
+Repository: only Prisma DB queries. No business logic. Returns domain objects.
+
+
+1. Auth Repository
+
+File: services/api/src/modules/auth/auth.repository.ts
+
+Functions to implement:
+
+typescriptfindByEmail(email: string): Promise<User | null>
+findById(id: string): Promise<User | null>
+create(data: CreateUserData): Promise<User>
+updateFailedAttempts(id: string, attempts: number, lockedUntil: Date | null): Promise<void>
+resetFailedAttempts(id: string): Promise<void>
+updateLastLogin(id: string): Promise<void>
+createRefreshToken(data: CreateRefreshTokenData): Promise<RefreshToken>
+findRefreshToken(tokenHash: string): Promise<RefreshToken | null>
+deleteRefreshToken(id: string): Promise<void>
+deleteAllRefreshTokens(userId: string): Promise<void>
+createEmailVerificationToken(data: {...}): Promise<void>
+
+2. JWT Helpers
+
+File: services/api/src/modules/auth/auth.helpers.ts
+
+typescriptimport jwt from 'jsonwebtoken'
+import crypto from 'crypto'
+
+export function generateAccessToken(user: User): string {
+  return jwt.sign(
+    {
+      sub:    user.id,
+      teamId: user.teamId,
+      role:   user.role,
+      email:  user.email,
+    },
+    process.env.JWT_SECRET!,
+    {
+      expiresIn: '15m',
+      algorithm: 'HS256',
+      issuer:    'vocaply.com',
+      audience:  'vocaply-api',
+    }
+  )
+}
+
+export function generateRefreshToken(): string {
+  // 64-char hex string — NEVER stored plain, only SHA-256 hash
+  return crypto.randomBytes(32).toString('hex')
+}
+
+export function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex')
+}
+
+export const COOKIE_OPTIONS = {
+  httpOnly:  true,
+  secure:    process.env.NODE_ENV === 'production',
+  sameSite:  'strict' as const,
+  path:      '/auth/refresh',   // Only sent to this path
+  maxAge:    30 * 24 * 60 * 60 * 1000,  // 30 days
+}
+
+3. Auth Service — Register
+
+File: services/api/src/modules/auth/auth.service.ts
+
+register(data: { name, email, password }) flow:
+
+1. Validate input (Zod schema handles this before controller)
+2. existingUser = await repo.findByEmail(email.toLowerCase())
+   → If found: throw DuplicateError('Email already registered')
+3. passwordHash = await bcrypt.hash(password, 12)
+4. user = await repo.create({ id: cuid(), email: email.toLowerCase(), name, passwordHash })
+5. verificationToken = crypto.randomBytes(32).toString('hex')
+6. tokenHash = sha256(verificationToken)
+7. await repo.createEmailVerificationToken({ userId: user.id, tokenHash, expiresAt: +24h })
+8. await emailService.sendVerificationEmail({ to: email, name, verificationToken })
+9. return { message: "Check your email to verify your account", email }
+   → NO user object, NO token in response (account unverified)
+
+login(data: { email, password }) flow (brute force safe):
+
+1. user = await repo.findByEmail(email.toLowerCase())
+2. IF !user:
+     await bcrypt.compare(password, FAKE_HASH)  // timing attack prevention
+     throw UnauthorizedError('INVALID_CREDENTIALS', 'Invalid email or password')
+3. IF user.lockedUntil && user.lockedUntil > new Date():
+     throw RateLimitError('Account locked. Try again in X minutes.')
+4. IF !user.emailVerified:
+     throw ForbiddenError('EMAIL_NOT_VERIFIED') with message 'Please verify your email'
+5. IF !user.passwordHash:
+     throw UnauthorizedError('USE_OAUTH', 'This account uses Google/GitHub login')
+6. passwordMatch = await bcrypt.compare(password, user.passwordHash)
+7. IF !passwordMatch:
+     newAttempts = user.failedAttempts + 1
+     lockedUntil = newAttempts >= 5 ? addMinutes(new Date(), 15) : null
+     await repo.updateFailedAttempts(user.id, newAttempts, lockedUntil)
+     throw UnauthorizedError('INVALID_CREDENTIALS', 'Invalid email or password')
+8. await repo.resetFailedAttempts(user.id)
+9. await repo.updateLastLogin(user.id)
+10. accessToken = generateAccessToken(user)
+11. refreshToken = generateRefreshToken()
+12. await repo.createRefreshToken({
+      userId: user.id,
+      tokenHash: hashToken(refreshToken),
+      expiresAt: addDays(new Date(), 30),
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent']
+    })
+13. res.cookie('vocaply_refresh', refreshToken, COOKIE_OPTIONS)  // HttpOnly cookie
+14. return { accessToken, user: { id, name, email, role, teamId, team } }
+
+logout() flow:
+
+1. refreshToken = req.cookies.vocaply_refresh
+2. IF refreshToken:
+     tokenHash = hashToken(refreshToken)
+     await repo.findRefreshToken(tokenHash) → if found, delete it
+3. res.clearCookie('vocaply_refresh', { path: '/auth/refresh' })
+4. return { message: "Logged out successfully" }
+
+4. Auth Validator (Zod Schemas)
+
+File: services/api/src/modules/auth/auth.validator.ts
+
+typescriptexport const registerSchema = z.object({
+  name:     z.string().min(2).max(100),
+  email:    z.string().email().toLowerCase(),
+  password: z.string()
+    .min(8).max(128)
+    .regex(/[A-Z]/, 'Must contain uppercase')
+    .regex(/[0-9]/, 'Must contain number')
+    .regex(/[^A-Za-z0-9]/, 'Must contain special character'),
+})
+
+export const loginSchema = z.object({
+  email:    z.string().email(),
+  password: z.string().min(1, 'Password required'),
+})
+
+5. Auth Controller
+
+File: services/api/src/modules/auth/auth.controller.ts
+
+Three functions — each is just req → service call → res:
+
+typescriptregister: asyncHandler(async (req, res) => {
+  const result = await authService.register(req.body)
+  res.status(201).json(success(result))
+})
+
+login: asyncHandler(async (req, res) => {
+  const result = await authService.login(req.body, req, res)
+  res.status(200).json(success(result))
+})
+
+logout: asyncHandler(async (req, res) => {
+  await authService.logout(req, res)
+  res.status(200).json(success({ message: 'Logged out successfully' }))
+})
+
+6. Auth Routes
+
+File: services/api/src/modules/auth/auth.routes.ts
+
+typescriptrouter.post('/register',   validate(registerSchema),  loginRateLimiter,  authController.register)
+router.post('/login',      validate(loginSchema),      loginRateLimiter,  authController.login)
+router.post('/logout',     authController.logout)  // No auth required (cookie handles it)
+
+7. requireAuth Middleware (Auth Middleware)
+
+File: services/api/src/middleware/auth.middleware.ts
+
+typescriptexport async function requireAuth(req, res, next) {
+  const header = req.headers.authorization
+  if (!header?.startsWith('Bearer ')) {
+    return next(new UnauthorizedError('AUTH_REQUIRED', 'Authentication required'))
+  }
+
+  const token = header.split(' ')[1]
+  try {
+    const payload = jwt.verify(token, process.env.JWT_SECRET!, {
+      algorithms: ['HS256'],
+      issuer:     'vocaply.com',
+      audience:   'vocaply-api',
+    }) as JwtPayload
+
+    req.user = {
+      id:     payload.sub,
+      teamId: payload.teamId,
+      role:   payload.role,
+      email:  payload.email,
+    }
+    next()
+  } catch (err) {
+    if (err instanceof jwt.TokenExpiredError) {
+      return next(new UnauthorizedError('TOKEN_EXPIRED', 'Access token expired'))
+    }
+    return next(new UnauthorizedError('TOKEN_INVALID', 'Invalid access token'))
+  }
+}
+
+8. Verification Email (Resend)
+
+File: services/api/src/modules/notifications/email.service.ts
+
+Simple email using Resend SDK. Template is plain HTML for now (React Email templates come Day 18):
+
+typescriptexport async function sendVerificationEmail(data: {
+  to: string
+  name: string
+  verificationToken: string
+}) {
+  const url = `${process.env.FRONTEND_URL}/verify-email?token=${data.verificationToken}`
+  await resend.emails.send({
+    from:    'Vocaply <noreply@vocaply.com>',
+    to:      data.to,
+    subject: 'Verify your Vocaply account',
+    html:    `<p>Hi ${data.name},</p>
+              <p>Click <a href="${url}">here</a> to verify your account.</p>
+              <p>Link expires in 24 hours.</p>`,
+  })
+}
+
+
+Files Created Today
+
+services/api/src/modules/auth/auth.repository.ts
+services/api/src/modules/auth/auth.service.ts
+services/api/src/modules/auth/auth.controller.ts
+services/api/src/modules/auth/auth.validator.ts
+services/api/src/modules/auth/auth.routes.ts
+services/api/src/modules/auth/auth.helpers.ts
+services/api/src/modules/auth/auth.types.ts
+services/api/src/middleware/auth.middleware.ts    ← FILLED IN (was scaffold)
+services/api/src/modules/notifications/email.service.ts
+
+Updated:
+
+services/api/src/app.ts   ← Register auth routes: app.use('/auth', authRouter)
+
+
+Day 13 End-of-Day Checklist
+
+REGISTER:
+  [ ] POST /auth/register { name, email, password } → 201
+  [ ] Duplicate email → 409 DUPLICATE
+  [ ] Weak password (no uppercase) → 422 VALIDATION_ERROR with field
+  [ ] User created in DB (check psql)
+  [ ] Verification token created in email_verification_tokens table
+  [ ] Email sent (check Resend dashboard OR email inbox)
+  [ ] Response does NOT include token or password hash
+
+LOGIN:
+  [ ] POST /auth/login { email, password } → 200 with accessToken + user
+  [ ] Wrong password → 401 INVALID_CREDENTIALS (exact message: "Invalid email or password")
+  [ ] Wrong email → 401 INVALID_CREDENTIALS (same message — no user enumeration)
+  [ ] Unverified email → 403 EMAIL_NOT_VERIFIED
+  [ ] 5 wrong passwords → account locked (check lockedUntil in DB)
+  [ ] 6th attempt on locked account → 429 with minutes remaining
+  [ ] HttpOnly cookie set with name vocaply_refresh (check browser devtools)
+  [ ] Cookie path: /auth/refresh (NOT /api or /)
+  [ ] AccessToken has correct claims (decode at jwt.io)
+  [ ] AccessToken expires in 15 minutes
+
+LOGOUT:
+  [ ] POST /auth/logout → 200 { message: "Logged out successfully" }
+  [ ] Cookie cleared from response
+  [ ] Refresh token deleted from DB
+
+JWT:
+  [ ] Decoded payload has: sub, teamId (null for new user), role, email, iat, exp
+  [ ] Token signed with HS256 (check header at jwt.io)
+  [ ] requireAuth on a test protected route works with valid token
+  [ ] requireAuth returns 401 with expired token
+  [ ] requireAuth returns 401 with tampered token
+
+
+Day 14 — Auth API Part 2 (Refresh, Email Verify, OAuth Google, Password Reset)
+
+Theme: Complete the Auth System
+
+
+Aaj auth system complete hoga. Refresh token rotation, email verification,
+Google OAuth, password reset — sab kuch production-grade. Baad mein koi
+auth bug fix karni nahi chahiye. Aaj sab kuch sahi karo.
+
+
+
+
+Work Hours Breakdown (8 Hours)
+
+9:00 AM – 10:00 AM  → Token refresh endpoint (rotation)
+10:00 AM – 11:00 AM → Email verification endpoint
+11:00 AM – 12:00 PM → Password reset (forgot + reset endpoints)
+12:00 PM – 1:00 PM  → Lunch break
+1:00 PM – 2:30 PM   → Google OAuth flow (initiate + callback)
+2:30 PM – 3:30 PM   → GET /auth/me + PATCH /auth/me
+3:30 PM – 4:30 PM   → Sessions list + revoke session
+4:30 PM – 5:00 PM   → Tenant middleware (inject teamId)
+5:00 PM – 5:30 PM   → Role middleware (requireRole factory)
+5:30 PM – 6:00 PM   → Full auth integration test + checklist
+
+
+What to Build
+
+1. Token Refresh (Rotation)
+
+Endpoint: POST /auth/refresh
+
+Service flow (authService.refresh):
+1. refreshToken = req.cookies.vocaply_refresh
+   → Missing: throw UnauthorizedError('NO_REFRESH_TOKEN', ...)
+2. tokenHash = hashToken(refreshToken)
+3. stored = await repo.findRefreshToken(tokenHash)
+   → Not found: throw UnauthorizedError('INVALID_REFRESH_TOKEN', ...)
+4. IF stored.expiresAt < new Date():
+     await repo.deleteRefreshToken(stored.id)  // Clean up expired
+     throw UnauthorizedError('REFRESH_TOKEN_EXPIRED', ...)
+5. user = await repo.findById(stored.userId)
+   → Not found: throw UnauthorizedError('USER_NOT_FOUND', ...)
+
+6. // ROTATION — delete old token, issue new
+   await repo.deleteRefreshToken(stored.id)
+
+7. newAccessToken  = generateAccessToken(user)
+8. newRefreshToken = generateRefreshToken()
+9. await repo.createRefreshToken({
+     userId: user.id,
+     tokenHash: hashToken(newRefreshToken),
+     expiresAt: addDays(new Date(), 30)
+   })
+10. res.cookie('vocaply_refresh', newRefreshToken, COOKIE_OPTIONS)
+11. return { accessToken: newAccessToken }
+
+This is a public route (no requireAuth — uses the cookie).
+
+2. Email Verification
+
+Endpoint: GET /auth/verify-email?token=xxx
+
+Service flow:
+1. token = req.query.token
+2. tokenHash = hashToken(token)
+3. stored = await repo.findEmailVerificationToken(tokenHash)
+   → Not found: throw AppError('TOKEN_INVALID', 400, ...)
+4. IF stored.expiresAt < new Date():
+     throw AppError('TOKEN_EXPIRED', 410, ...)
+5. // Mark user as verified + delete token (one-time use)
+   await prisma.$transaction([
+     prisma.user.update({ where: { id: stored.userId }, data: { emailVerified: true } }),
+     prisma.emailVerificationToken.delete({ where: { id: stored.id } })
+   ])
+6. // Auto-login: issue tokens
+   user = await repo.findById(stored.userId)
+   accessToken  = generateAccessToken(user)
+   refreshToken = generateRefreshToken()
+   await repo.createRefreshToken(...)
+   res.cookie('vocaply_refresh', refreshToken, COOKIE_OPTIONS)
+7. return { accessToken, user, message: "Email verified successfully" }
+
+3. Password Reset (2 Endpoints)
+
+POST /auth/forgot-password flow:
+
+1. email = req.body.email (validated by Zod)
+2. user = await repo.findByEmail(email)
+   → Whether found or not: ALWAYS return 200 (never reveal existence)
+3. IF user exists AND user.emailVerified:
+     token = crypto.randomBytes(32).toString('hex')
+     tokenHash = hashToken(token)
+     await repo.createPasswordResetToken({ userId: user.id, tokenHash, expiresAt: +1hour })
+     await emailService.sendPasswordResetEmail({ to: email, token })
+4. return { message: "If that email exists, a reset link has been sent" }
+
+POST /auth/reset-password flow:
+
+1. { token, newPassword } = req.body
+2. tokenHash = hashToken(token)
+3. stored = await repo.findPasswordResetToken(tokenHash)
+   → Not found OR usedAt is set: throw AppError('TOKEN_INVALID', 400)
+4. IF stored.expiresAt < new Date(): throw AppError('TOKEN_EXPIRED', 410)
+5. IF newPassword === user.currentPassword: throw ValidationError
+6. newHash = await bcrypt.hash(newPassword, 12)
+7. // In transaction:
+   await prisma.$transaction([
+     prisma.user.update({ where: { id: stored.userId }, data: { passwordHash: newHash } }),
+     prisma.passwordResetToken.update({ where: { id: stored.id }, data: { usedAt: new Date() } }),
+     prisma.refreshToken.deleteMany({ where: { userId: stored.userId } })  // Invalidate ALL sessions
+   ])
+8. // Auto-login with fresh session
+   return { accessToken, user, message: "Password reset successful" }
+
+4. Google OAuth
+
+GET /auth/google — Initiate:
+
+typescript// Generate CSRF state, store in Redis (TTL 10 min)
+const state = crypto.randomBytes(32).toString('hex')
+await redis.setex(`oauth:state:${state}`, 600, '1')
+
+// Build Google OAuth URL
+const params = new URLSearchParams({
+  client_id:    process.env.GOOGLE_CLIENT_ID!,
+  redirect_uri: `${process.env.API_URL}/auth/google/callback`,
+  response_type: 'code',
+  scope:        'openid email profile',
+  state,
+  access_type:  'offline',
+})
+res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`)
+
+GET /auth/google/callback — Handle:
+
+1. { code, state, error } = req.query
+2. IF error === 'access_denied': redirect to /login?error=oauth_denied
+3. stored = await redis.get(`oauth:state:${state}`)
+   → Not found: redirect to /login?error=oauth_failed
+4. await redis.del(`oauth:state:${state}`)  // One-time use
+5. Exchange code for tokens at Google token endpoint
+6. Decode id_token → { sub (googleId), email, name, picture }
+7. Account linking logic:
+     CASE 1: googleId found in DB → existing Google user
+     CASE 2: email found → link Google to existing account
+     CASE 3: neither → create new user (emailVerified: true)
+8. Issue accessToken + refreshToken
+9. Set HttpOnly cookie
+10. Redirect to: /dashboard (existing) or /onboarding (new user)
+
+5. GET /auth/me + PATCH /auth/me
+
+Both behind requireAuth. Returns user with team data.
+
+PATCH /auth/me validates and updates: name, timezone, avatarUrl.
+
+6. Sessions (List + Revoke)
+
+GET /auth/sessions — Returns all active refresh tokens for current user:
+
+typescript// Returns: [{ id, ipAddress, userAgent, device, lastUsedAt, createdAt, isCurrent }]
+// "isCurrent" = true if tokenHash matches current request cookie
+
+DELETE /auth/sessions/:sessionId — Deletes a specific refresh token (remote logout).
+
+Cannot delete current session (use /logout for that).
+
+7. Tenant Middleware
+
+File: services/api/src/middleware/tenant.middleware.ts
+
+typescriptexport function injectTenant(req: Request, _res: Response, next: NextFunction) {
+  if (!req.user?.teamId) {
+    return next(new ForbiddenError('You must be part of a team to access this resource'))
+  }
+  req.teamId = req.user.teamId
+  next()
+}
+
+8. Role Middleware
+
+File: services/api/src/middleware/role.middleware.ts
+
+typescriptconst ROLE_LEVELS: Record<string, number> = {
+  OWNER: 4, ADMIN: 3, MANAGER: 2, MEMBER: 1
+}
+
+export function requireRole(...roles: string[]) {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    const userLevel = ROLE_LEVELS[req.user.role] ?? 0
+    const required  = Math.min(...roles.map((r) => ROLE_LEVELS[r] ?? 99))
+    if (userLevel < required) {
+      return next(new ForbiddenError(`Requires role: ${roles.join(' or ')}`))
+    }
+    next()
+  }
+}
+
+// Usage: router.patch('/me', requireAuth, requireRole('ADMIN', 'OWNER'), handler)
+
+
+Files Created Today
+
+services/api/src/modules/auth/auth.service.ts    ← UPDATED (add refresh, verify, reset, oauth)
+services/api/src/modules/auth/auth.repository.ts ← UPDATED (add more query functions)
+services/api/src/modules/auth/auth.controller.ts ← UPDATED (add new endpoints)
+services/api/src/modules/auth/auth.routes.ts     ← UPDATED (all routes registered)
+services/api/src/middleware/tenant.middleware.ts  ← FILLED IN
+services/api/src/middleware/role.middleware.ts    ← NEW
+
+
+Day 14 End-of-Day Checklist
+
+REFRESH:
+  [ ] POST /auth/refresh (with valid cookie) → 200 with new accessToken
+  [ ] New cookie set with rotated refresh token
+  [ ] Old refresh token deleted from DB
+  [ ] POST /auth/refresh (expired cookie) → 401
+  [ ] POST /auth/refresh (no cookie) → 401
+
+EMAIL VERIFY:
+  [ ] GET /auth/verify-email?token=valid → 200, auto-login, user.emailVerified=true
+  [ ] Token deleted from DB after use (check psql)
+  [ ] Same token second time → 400 TOKEN_INVALID
+  [ ] Expired token → 410 TOKEN_EXPIRED
+
+PASSWORD RESET:
+  [ ] POST /auth/forgot-password → always 200 (even unknown email)
+  [ ] Token created in password_reset_tokens table
+  [ ] POST /auth/reset-password with valid token → 200, auto-login
+  [ ] Token usedAt set (not deleted — audit trail)
+  [ ] All other refresh tokens for user deleted
+  [ ] POST /auth/reset-password with used token → 400 TOKEN_INVALID
+
+GOOGLE OAUTH:
+  [ ] GET /auth/google → redirects to accounts.google.com
+  [ ] State stored in Redis (check redis-cli: GET oauth:state:*)
+  [ ] Callback with valid code → creates/finds user, sets cookie, redirects
+  [ ] Callback with error=access_denied → redirects to /login?error=oauth_denied
+  [ ] CSRF: callback with wrong state → redirect to /login?error=oauth_failed
+
+SESSIONS:
+  [ ] GET /auth/sessions (authenticated) → lists active sessions
+  [ ] isCurrent: true on the session matching current cookie
+  [ ] DELETE /auth/sessions/:id → removes that session from DB
+
+MIDDLEWARE:
+  [ ] requireAuth: 401 without token
+  [ ] requireAuth: 401 with expired token
+  [ ] requireAuth: 200 with valid token (req.user populated)
+  [ ] injectTenant: 403 if user has no teamId
+  [ ] requireRole('ADMIN'): 403 for MEMBER role
+  [ ] requireRole('MANAGER'): 200 for MANAGER role
+
+
+Day 15 — Auth Frontend (Login/Register UI + AuthProvider + Protected Routes)
+
+Theme: The First Real UI — Users Can Now Sign In
+
+
+Aaj pehli baar koi real user interaction hoga. Login form, register form,
+email verification page — sab kuch connected to real backend APIs.
+AuthProvider, Axios interceptors, route protection — sab aaj complete hoga.
+
+
+
+
+Work Hours Breakdown (8 Hours)
+
+9:00 AM – 10:00 AM  → Axios API client + interceptors (token attach + 401 refresh)
+10:00 AM – 11:00 AM → Auth store (Zustand) + auth hooks
+11:00 AM – 12:00 PM → AuthProvider + WebSocketProvider scaffold
+12:00 PM – 1:00 PM  → Lunch break
+1:00 PM – 2:00 PM   → Login page UI (full form + validation + error states)
+2:00 PM – 3:00 PM   → Register page UI + PasswordStrengthBar
+3:00 PM – 3:30 PM   → Verify email page + Forgot/Reset password pages
+3:30 PM – 4:30 PM   → Auth route group layout + OAuthButton (Google)
+4:30 PM – 5:30 PM   → AuthGuard + protected dashboard route
+5:30 PM – 6:00 PM   → Full flow test (register → verify → login) + checklist
+
+
+What to Build
+
+1. Axios API Client with Interceptors
+
+File: apps/web/src/lib/api/client.ts
+
+Request interceptor — attaches Bearer token from Zustand:
+
+typescriptaxiosInstance.interceptors.request.use((config) => {
+  const { accessToken } = useAuthStore.getState()
+  if (accessToken) {
+    config.headers.Authorization = `Bearer ${accessToken}`
+  }
+  return config
+})
+
+Response interceptor — handles 401 with silent refresh:
+
+typescript// Queues concurrent requests while refresh is in progress
+let isRefreshing = false
+let refreshSubscribers: Array<(token: string) => void> = []
+
+axiosInstance.interceptors.response.use(
+  (res) => res,
+  async (error: AxiosError) => {
+    const original = error.config as any
+    if (error.response?.status === 401 && !original._retry) {
+      if (isRefreshing) {
+        return new Promise((resolve) => {
+          refreshSubscribers.push((token) => {
+            original.headers.Authorization = `Bearer ${token}`
+            resolve(axiosInstance(original))
+          })
+        })
+      }
+      original._retry = true
+      isRefreshing = true
+      try {
+        const res = await fetch('/api/auth/refresh', {
+          method: 'POST', credentials: 'include'
+        })
+        if (!res.ok) throw new Error()
+        const { accessToken } = await res.json()
+        useAuthStore.getState().setAccessToken(accessToken)
+        refreshSubscribers.forEach((cb) => cb(accessToken))
+        refreshSubscribers = []
+        original.headers.Authorization = `Bearer ${accessToken}`
+        return axiosInstance(original)
+      } catch {
+        useAuthStore.getState().clearAuth()
+        window.location.href = '/login?reason=session_expired'
+      } finally {
+        isRefreshing = false
+      }
+    }
+    return Promise.reject(error)
+  }
+)
+
+2. Auth Store (Zustand)
+
+File: apps/web/src/store/auth.store.ts
+
+typescriptinterface AuthState {
+  accessToken:     string | null   // MEMORY ONLY — never localStorage
+  user:            User | null
+  isAuthenticated: boolean
+  isLoading:       boolean         // True until first auth check resolves
+}
+
+export const useAuthStore = create<AuthState>()(
+  devtools((set) => ({
+    accessToken:     null,
+    user:            null,
+    isAuthenticated: false,
+    isLoading:       true,
+    setUser:         (user) => set({ user, isAuthenticated: !!user }),
+    setAccessToken:  (token) => set({ accessToken: token }),
+    clearAuth:       () => set({ user: null, accessToken: null, isAuthenticated: false }),
+    setLoading:      (loading) => set({ isLoading: loading }),
+  }))
+)
+
+3. Auth Hooks
+
+Files: apps/web/src/features/auth/hooks/
+
+useAuth.ts — read current user:
+
+typescriptexport function useAuth() {
+  const { user, isAuthenticated, isLoading } = useAuthStore()
+  return { user, isAuthenticated, isLoading }
+}
+
+useLogin.ts — login mutation:
+
+typescriptexport function useLogin() {
+  const { setUser, setAccessToken } = useAuthStore()
+  const router = useRouter()
+
+  return useMutation({
+    mutationFn: (data: LoginInput) => authApi.login(data),
+    onSuccess: ({ accessToken, user }) => {
+      setAccessToken(accessToken)
+      setUser(user)
+      router.push(user.teamId ? '/dashboard' : '/onboarding')
+    },
+  })
+}
+
+useRegister.ts — register mutation:
+
+typescriptexport function useRegister() {
+  const router = useRouter()
+  return useMutation({
+    mutationFn: (data: RegisterInput) => authApi.register(data),
+    onSuccess: (_, variables) => {
+      router.push(`/verify-email-sent?email=${encodeURIComponent(variables.email)}`)
+    },
+  })
+}
+
+useLogout.ts — logout:
+
+typescriptexport function useLogout() {
+  const { clearAuth } = useAuthStore()
+  const queryClient   = useQueryClient()
+  const router        = useRouter()
+
+  return useMutation({
+    mutationFn: () => authApi.logout(),
+    onSettled: () => {
+      clearAuth()
+      queryClient.clear()   // Clear ALL cached data on logout
+      router.push('/login')
+    },
+  })
+}
+
+4. AuthProvider (Silent Refresh on Mount)
+
+File: apps/web/src/shared/providers/AuthProvider.tsx
+
+typescript'use client'
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const { setUser, setAccessToken, setLoading, clearAuth } = useAuthStore()
+
+  useEffect(() => {
+    async function initAuth() {
+      try {
+        const res = await fetch('/api/auth/refresh', {
+          method: 'POST',
+          credentials: 'include',
+        })
+        if (!res.ok) { clearAuth(); return }
+        const { accessToken, user } = await res.json()
+        setAccessToken(accessToken)
+        setUser(user)
+      } catch {
+        clearAuth()
+      } finally {
+        setLoading(false)
+      }
+    }
+    initAuth()
+  }, [])
+
+  // Proactive refresh: 2 minutes before token expires (every 13 minutes)
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (!useAuthStore.getState().isAuthenticated) return
+      try {
+        const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' })
+        if (!res.ok) throw new Error()
+        const { accessToken } = await res.json()
+        setAccessToken(accessToken)
+      } catch {
+        clearAuth()
+      }
+    }, 13 * 60 * 1000)
+    return () => clearInterval(interval)
+  }, [])
+
+  return <>{children}</>
+}
+
+5. BFF Route Handler (Silent Refresh Proxy)
+
+File: apps/web/src/app/api/auth/refresh/route.ts
+
+typescriptexport async function POST(req: NextRequest) {
+  const cookie = req.cookies.get('vocaply_refresh')?.value
+  if (!cookie) return NextResponse.json({ error: 'No refresh token' }, { status: 401 })
+
+  // Proxy to backend API
+  const backendRes = await fetch(`${process.env.API_URL}/auth/refresh`, {
+    method:  'POST',
+    headers: { Cookie: `vocaply_refresh=${cookie}` },
+  })
+
+  if (!backendRes.ok) {
+    return NextResponse.json({ error: 'Refresh failed' }, { status: 401 })
+  }
+
+  const data   = await backendRes.json()
+  const newCookie = backendRes.headers.get('set-cookie')
+
+  const response = NextResponse.json(data)
+  if (newCookie) response.headers.set('Set-Cookie', newCookie)
+  return response
+}
+
+6. Login Page UI
+
+File: apps/web/src/app/(auth)/login/page.tsx + features/auth/components/LoginForm.tsx
+
+LoginForm component — complete UI:
+
+LAYOUT:
+  AuthCard wrapper (centered, max-width 400px)
+  "vocaply" logo wordmark (DM Sans 20px, bold) at top
+  Heading: "Welcome back"
+  Subtext: "Sign in to your account"
+
+  Form fields:
+    Email input (type="email", autoComplete="email")
+    Password input (type="password" with show/hide toggle)
+
+  Error display:
+    API errors (wrong password) → red text below password field
+    "Account locked" → amber banner above submit button with time remaining
+
+  Submit button:
+    Full-width, primary variant
+    Loading spinner when isSubmitting
+    Text: "Sign in"
+
+  Footer:
+    "Don't have an account?" + "Sign up" link
+    "Forgot your password?" link
+
+  Google OAuth button:
+    OAuthButton component with Google icon
+    Text: "Continue with Google"
+    href: /api/auth/google (proxied to backend)
+    Placed above email form with "or" divider
+
+VALIDATION (React Hook Form + Zod):
+  Email: required, valid email format
+  Password: required (not checking strength here — that's register)
+  Errors show on blur (not on every keystroke)
+
+Accessible form patterns:
+
+
+All inputs have <label> with htmlFor
+Error messages use aria-describedby on the input
+Submit button aria-busy when loading
+Focus moves to first error field on failed submit
+
+
+7. Register Page UI
+
+File: features/auth/components/RegisterForm.tsx
+
+Same structure as Login, plus:
+
+
+Name field (first field, type="text", autoComplete="name")
+PasswordStrengthBar — shows strength below password field
+
+
+PasswordStrengthBar component:
+
+Visual: 4 bars (weak → strong) that fill left to right
+Colors: red → orange → yellow → green
+Logic:
+  1 bar (red):    < 8 chars
+  2 bars (orange): has length but missing uppercase OR number
+  3 bars (yellow): has length + uppercase + number (no special char)
+  4 bars (green):  all requirements met
+Label text:
+  "Weak" / "Fair" / "Good" / "Strong"
+
+After submit: shows "Check your email" success state (not a redirect — inline).
+
+8. Verify Email Page
+
+File: apps/web/src/app/(auth)/verify-email/page.tsx
+
+URL: /verify-email?token=xxx
+
+On mount: call GET /auth/verify-email?token=xxx (backend)
+
+LOADING state: spinner + "Verifying your email..."
+
+SUCCESS state:
+  Green checkmark icon
+  "Email verified!"
+  "You're now signed in." (auto-login happened)
+  Button: "Go to Dashboard" → href /dashboard
+
+ERROR states:
+  TOKEN_INVALID:
+    "This verification link is invalid."
+    Button: "Request a new link"
+
+  TOKEN_EXPIRED:
+    "This link has expired."
+    Button: "Resend verification email"
+
+  Both errors also show: small email input + resend button
+
+9. Forgot Password + Reset Password Pages
+
+Forgot password (/forgot-password):
+
+
+Single email input
+On submit: always shows "If that email exists, we've sent a reset link"
+No error states that reveal email existence
+
+
+Reset password (/reset-password?token=xxx):
+
+
+New password + confirm password fields
+PasswordStrengthBar on new password
+On success: "Password updated! You're now signed in." + Go to dashboard
+
+
+10. AuthGuard + Protected Routes
+
+File: apps/web/src/features/auth/components/AuthGuard.tsx
+
+typescript'use client'
+export function AuthGuard({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isLoading, user } = useAuthStore()
+  const router = useRouter()
+
+  useEffect(() => {
+    if (isLoading) return
+    if (!isAuthenticated) router.push('/login')
+    else if (!user?.teamId) router.push('/onboarding')
+  }, [isAuthenticated, isLoading, user, router])
+
+  if (isLoading) return <FullPageSpinner />
+  if (!isAuthenticated) return null  // Redirect in progress
+
+  return <>{children}</>
+}
+
+Update app/(dashboard)/layout.tsx to wrap with <AuthGuard>:
+
+typescriptexport default function DashboardLayout({ children }) {
+  return (
+    <AuthGuard>
+      <div className="min-h-screen bg-surface-2">
+        {/* AppShell comes Day 26 — for now just a wrapper */}
+        {children}
+      </div>
+    </AuthGuard>
+  )
+}
+
+Temporary dashboard placeholder (app/(dashboard)/dashboard/page.tsx):
+
+typescriptexport default function DashboardPage() {
+  const { user } = useAuth()
+  return (
+    <div className="p-8">
+      <h1 className="text-2xl font-semibold">Welcome, {user?.name} 👋</h1>
+      <p className="text-muted mt-2">Dashboard coming soon — auth is working!</p>
+    </div>
+  )
+}
+
+
+UI/UX Specifications for Auth Pages
+
+AUTH CARD (wrapper for all auth pages):
+  Width: max-width 400px
+  Background: white
+  Border: 1px solid --color-border
+  Border-radius: --radius-xl (12px)
+  Padding: 40px 36px
+  Box-shadow: --shadow-md
+  Centered in page (flex, min-h-screen)
+
+AUTH PAGE BACKGROUND:
+  Background: --color-surface (#F2F1EE)
+  Very subtle grid or noise texture (optional)
+
+FORM SPACING:
+  Between fields: 20px gap
+  Below label, above input: 6px
+  Error text below input: 6px margin-top, 13px, red
+
+GOOGLE OAUTH BUTTON:
+  Full-width, outline variant
+  Google "G" logo SVG (colored, 18px, left side)
+  Text: "Continue with Google" (DM Sans 14px, 500)
+  OR divider: horizontal lines + "or" text (muted, 12px)
+
+PASSWORD TOGGLE:
+  Eye icon on right of password input
+  Click: switches type="password" ↔ type="text"
+  Aria-label: "Show password" / "Hide password"
+
+LOADING STATES:
+  Submit button: spinner replaces text, button disabled
+  Spinner: 16px, white, spinning on dark button
+  FullPageSpinner: covers whole page during auth check (prevents flash)
+
+
+Files Created Today
+
+apps/web/src/lib/api/client.ts                         ← Axios + interceptors
+apps/web/src/lib/api/auth.api.ts                       ← Auth API functions
+apps/web/src/store/auth.store.ts                       ← Zustand auth slice
+apps/web/src/store/ui.store.ts                         ← Zustand UI slice
+apps/web/src/store/index.ts                            ← Export all stores
+apps/web/src/shared/providers/Providers.tsx            ← Root providers wrapper
+apps/web/src/shared/providers/AuthProvider.tsx         ← Silent refresh
+apps/web/src/shared/providers/QueryProvider.tsx        ← TanStack Query client
+apps/web/src/features/auth/components/LoginForm.tsx
+apps/web/src/features/auth/components/RegisterForm.tsx
+apps/web/src/features/auth/components/OAuthButton.tsx
+apps/web/src/features/auth/components/AuthCard.tsx
+apps/web/src/features/auth/components/PasswordStrengthBar.tsx
+apps/web/src/features/auth/components/AuthGuard.tsx
+apps/web/src/features/auth/hooks/useAuth.ts
+apps/web/src/features/auth/hooks/useLogin.ts
+apps/web/src/features/auth/hooks/useRegister.ts
+apps/web/src/features/auth/hooks/useLogout.ts
+apps/web/src/features/auth/api/auth.api.ts
+apps/web/src/features/auth/types/auth.types.ts
+apps/web/src/features/auth/index.ts
+apps/web/src/app/(auth)/login/page.tsx
+apps/web/src/app/(auth)/register/page.tsx
+apps/web/src/app/(auth)/verify-email/page.tsx
+apps/web/src/app/(auth)/forgot-password/page.tsx
+apps/web/src/app/(auth)/reset-password/page.tsx
+apps/web/src/app/api/auth/refresh/route.ts             ← BFF proxy
+apps/web/src/shared/components/feedback/FullPageSpinner.tsx
+
+Updated:
+
+apps/web/src/app/layout.tsx              ← Add Providers wrapper
+apps/web/src/app/(auth)/layout.tsx       ← Auth shell (centered card layout)
+apps/web/src/app/(dashboard)/layout.tsx  ← AuthGuard wrapper
+apps/web/src/app/(dashboard)/dashboard/page.tsx  ← Temporary placeholder
+
+
+Day 15 End-of-Day Checklist
+
+API CLIENT:
+  [ ] API calls attach Bearer token from Zustand
+  [ ] 401 response triggers silent token refresh
+  [ ] Concurrent 401 responses queue while one refresh is in progress
+  [ ] Refresh failure → clearAuth() + redirect to /login
+  [ ] No token → no Authorization header (doesn't crash)
+
+AUTH PROVIDER:
+  [ ] Page load: AuthProvider calls /api/auth/refresh silently
+  [ ] Valid cookie → accessToken + user set in Zustand
+  [ ] No cookie → isAuthenticated: false, isLoading: false
+  [ ] isLoading starts true, ends false regardless of outcome
+
+AUTH GUARD:
+  [ ] Visiting /dashboard without login → redirects to /login
+  [ ] Visiting /dashboard with valid session → shows dashboard placeholder
+  [ ] FullPageSpinner shows during isLoading phase (no flash of content)
+
+LOGIN FORM:
+  [ ] Email + password fields render with labels
+  [ ] Empty submit → field errors appear
+  [ ] Invalid email format → "Invalid email" error
+  [ ] Wrong credentials → "Invalid email or password" below password field
+  [ ] Locked account → amber banner with time remaining
+  [ ] Successful login → redirects to /dashboard
+  [ ] "Forgot password?" link goes to /forgot-password
+  [ ] "Sign up" link goes to /register
+  [ ] Google button visible with Google logo
+
+REGISTER FORM:
+  [ ] Name + email + password fields render
+  [ ] PasswordStrengthBar visible below password field
+  [ ] Weak password (no uppercase) → 1 bar (red) + "Weak"
+  [ ] Strong password → 4 bars (green) + "Strong"
+  [ ] Duplicate email → "Email already registered" error shown
+  [ ] Successful register → "Check your email" inline state shown
+
+VERIFY EMAIL:
+  [ ] /verify-email?token=valid → success state (green checkmark)
+  [ ] Button to /dashboard works after verification
+  [ ] Invalid token → error state with "Request new link" button
+  [ ] Expired token → error with "Resend email" button
+
+FORGOT/RESET:
+  [ ] Forgot password form submits without revealing email existence
+  [ ] Reset password with valid token → success + auto-login
+  [ ] Password strength bar on reset form
+
+FULL FLOW TEST:
+  [ ] Register → check email → click verify link → auto-login → /dashboard
+  [ ] Complete flow takes < 2 minutes with real email
+
+
+Summary: Days 11–15 Deliverables
+
+After these 5 days, Vocaply has a complete, production-grade auth system:
+
+DAY 11 ✅  Database schema: 15 tables, 9 enums, all indexes, seed data
+DAY 12 ✅  Backend foundation: error system, middleware chain, rate limiting
+DAY 13 ✅  Auth API Part 1: register, login (brute force safe), logout, JWT
+DAY 14 ✅  Auth API Part 2: refresh rotation, email verify, Google OAuth, password reset, sessions
+DAY 15 ✅  Auth Frontend: login/register UI, AuthProvider, silent refresh, protected routes
+
+WHAT EXISTS NOW:
+  ✅ Users can register, verify email, and log in
+  ✅ Google OAuth works
+  ✅ JWT access token + HttpOnly refresh cookie
+  ✅ Token rotation on every refresh (theft detection)
+  ✅ Brute force protection (5 attempts → 15 min lock)
+  ✅ Protected routes redirect to /login
+  ✅ Silent token refresh on page load and proactively
+  ✅ All API calls auto-attach Bearer token
+  ✅ 401 responses auto-refresh and retry
+
+WHAT COMES NEXT (Days 16–20):
+  Day 16 → Teams API (create team, invite members, roles)
+  Day 17 → Meetings API (CRUD, Recall.ai bot scheduling)
+  Day 18 → Webhooks (Recall.ai event handler, meeting state machine)
+  Day 19 → Commitments API (CRUD, status updates, filtering)
+  Day 20 → Action Items API + notification templates
+
+
+Environment Variables Required for Days 11–15
+
+bash# services/api/.env
+
+# Database
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/vocaply_dev"
+DIRECT_URL="postgresql://postgres:postgres@localhost:5432/vocaply_dev"
+MONGODB_URL="mongodb://localhost:27017/vocaply"
+REDIS_URL="redis://localhost:6379"
+
+# Auth
+JWT_SECRET="your-32-char-minimum-random-secret-here"
+JWT_EXPIRES_IN="15m"
+
+# Google OAuth
+GOOGLE_CLIENT_ID="your-google-client-id"
+GOOGLE_CLIENT_SECRET="your-google-client-secret"
+GOOGLE_REDIRECT_URI="http://localhost:4000/auth/google/callback"
+
+# Email
+RESEND_API_KEY="re_your_resend_api_key"
+RESEND_FROM_EMAIL="noreply@yourdomain.com"
+
+# URLs
+FRONTEND_URL="http://localhost:3000"
+API_URL="http://localhost:4000"
+NODE_ENV="development"
+
+# apps/web/.env.local
+
+NEXT_PUBLIC_API_URL="http://localhost:4000"
+API_URL="http://localhost:4000"
+
+
+Document: BUILD-PLAN-DAYS-11-15 | Vocaply | Version 1.0 | June 2026
+Stack: Next.js 14 · Node.js Express · PostgreSQL · Redis · TypeScript
+Phase: Post-Landing Page → Auth System Complete

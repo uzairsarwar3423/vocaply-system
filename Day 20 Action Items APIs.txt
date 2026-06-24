@@ -1,0 +1,474 @@
+Day 20 — Action Items API + Onboarding UI
+
+Theme: Complete the Core Backend + First Real Frontend Page
+
+
+Aaj do cheezein: action items API (commitment ke saath pairs mein aata hai)
+aur onboarding UI (4-step wizard). User register karne ke baad onboarding
+mein jaata hai — team banata hai, members invite karta hai, calendar connect
+karta hai. Yeh pura flow aaj complete hoga.
+
+
+
+
+Work Hours Breakdown (8 Hours)
+
+9:00 AM – 10:30 AM  → Action Items API (CRUD + sync endpoint)
+10:30 AM – 11:30 AM → notify.worker.ts (filled in — email + Slack routing)
+11:30 AM – 12:00 PM → Register all new routes in app.ts
+12:00 PM – 1:00 PM  → Lunch break
+1:00 PM – 2:00 PM   → Onboarding step 1 + 2 UI (Welcome + Create Team)
+2:00 PM – 3:00 PM   → Onboarding step 3 UI (Invite Team)
+3:00 PM – 4:00 PM   → Onboarding step 4 UI (Connect Calendar)
+4:00 PM – 5:00 PM   → useOnboarding hook + onboarding API calls
+5:00 PM – 5:30 PM   → Full onboarding flow test
+5:30 PM – 6:00 PM   → Checklist
+
+
+Action Items API (4 Endpoints)
+
+GET /api/v1/action-items — List with Filters
+
+Auth: Required + injectTenant
+
+Query Params:
+
+?assigneeId=usr_01
+?completed=false
+?priority=HIGH&priority=URGENT   (multi-value)
+?meetingId=mtg_01
+?hasJiraTicket=true
+?from=2026-05-01
+?search=payment bug
+?limit=20&cursor=cursor_abc
+?sortBy=priority&sortOrder=desc
+
+Service Logic: Similar to commitments list — cursor paginated with dynamic WHERE clause.
+
+Response per item:
+
+json{
+  "id":       "ai_01",
+  "text":     "Fix payment bug in checkout flow",
+  "priority": "HIGH",
+  "dueDate":  "2026-05-15T23:59:59Z",
+  "completed": false,
+  "assignee": {
+    "id":   "usr_02",
+    "name": "Ahmed Hassan"
+  },
+  "meeting": {
+    "id":    "mtg_01",
+    "title": "Monday Standup"
+  },
+  "jiraIssueId":  "TECH-142",
+  "jiraIssueUrl": "https://techflow.atlassian.net/browse/TECH-142"
+}
+
+
+PATCH /api/v1/action-items/:actionItemId — Update
+
+Auth: Required + injectTenant
+
+Request Body (all optional):
+
+json{
+  "completed":  true,
+  "assigneeId": "usr_03",
+  "dueDate":    "2026-05-20T23:59:59Z",
+  "priority":   "URGENT",
+  "text":       "Fix payment bug (updated)"
+}
+
+Service Logic:
+
+1. Verify actionItem.teamId === req.teamId
+2. If completed=true: set completedAt + completedById
+3. If assigneeId changed: verify new assignee is team member
+4. Update in DB
+5. If Jira linked + completed: queue integrate job to mark Jira Done
+6. Return updated item
+
+
+POST /api/v1/action-items/:actionItemId/sync — Sync to Jira/Linear/Notion
+
+Auth: Required + injectTenant
+
+Request Body:
+
+json{ "provider": "JIRA" }
+
+Service Logic:
+
+1. Check integration connected for provider → 422 if not
+2. Queue integrate job immediately (high priority)
+3. Return: { provider, status: "queued", message: "Sync started" }
+
+Full Jira sync implementation comes Day 58. Today: queue the job, return immediately.
+
+
+GET /api/v1/action-items/my — Current User's Action Items
+
+Auth: Required + injectTenant
+
+Filtered to assigneeId = req.user.id. Sorted by priority DESC, dueDate ASC.
+
+
+notify.worker.ts — Notification Routing (Filled In)
+
+File: services/api/src/queues/workers/notify.worker.ts
+
+typescriptexport const notifyWorker = new Worker<NotifyJobData>(
+  'notify',
+  async (job: Job<NotifyJobData>) => {
+    const { type, teamId, commitmentId, ownerId, meetingId, managerIds } = job.data
+
+    // Load user notification preferences
+    const ownerPrefs = ownerId
+      ? await prisma.notificationPreference.findUnique({ where: { userId: ownerId } })
+      : null
+
+    // Load Slack integration for team
+    const slackIntegration = await prisma.teamIntegration.findFirst({
+      where: { teamId, provider: 'SLACK', isActive: true },
+    })
+
+    // Dedup check
+    const dedupKey = `notif:dedup:${type}:${ownerId ?? teamId}:${commitmentId ?? meetingId ?? 'global'}`
+    if (await redis.exists(dedupKey)) return
+    await redis.setex(dedupKey, 3600, '1')
+
+    switch (type) {
+      case 'MEETING_PROCESSED': {
+        const meeting = meetingId ? await prisma.meeting.findUnique({ where: { id: meetingId } }) : null
+        if (!meeting) return
+
+        // Send Slack summary to team channel
+        if (slackIntegration) {
+          // Full Slack implementation: Day 60
+          logger.info({ meetingId }, 'notify: Slack meeting summary queued (Day 60)')
+        }
+
+        // Send email summary to managers
+        if (managerIds?.length) {
+          for (const managerId of managerIds) {
+            const manager = await prisma.user.findUnique({ where: { id: managerId } })
+            if (!manager) continue
+            await emailService.sendMeetingSummary({ to: manager.email, meeting })
+          }
+        }
+        break
+      }
+
+      case 'COMMITMENT_MISSED': {
+        if (!commitmentId || !ownerId) return
+        const [commitment, owner] = await Promise.all([
+          prisma.commitment.findUnique({ where: { id: commitmentId } }),
+          prisma.user.findUnique({ where: { id: ownerId } }),
+        ])
+        if (!commitment || !owner) return
+
+        // Email to owner
+        if (ownerPrefs?.preferences?.email?.commitmentMissed !== false) {
+          await emailService.sendCommitmentMissed({ to: owner.email, commitment })
+        }
+
+        // Alert managers
+        if (managerIds?.length) {
+          for (const managerId of managerIds) {
+            const manager = await prisma.user.findUnique({ where: { id: managerId } })
+            if (manager) {
+              await emailService.sendManagerAlert({ to: manager.email, owner, commitment })
+            }
+          }
+        }
+        break
+      }
+
+      case 'DEADLINE_REMINDER': {
+        if (!commitmentId || !ownerId) return
+        const [commitment, owner] = await Promise.all([
+          prisma.commitment.findUnique({ where: { id: commitmentId } }),
+          prisma.user.findUnique({ where: { id: ownerId } }),
+        ])
+        if (!commitment || !owner) return
+
+        if (ownerPrefs?.preferences?.email?.deadlineReminder !== false) {
+          await emailService.sendDeadlineReminder({ to: owner.email, commitment })
+        }
+        break
+      }
+    }
+  },
+  {
+    connection: { host: process.env.REDIS_HOST, port: parseInt(process.env.REDIS_PORT ?? '6379') },
+    concurrency: 5,
+  }
+)
+
+
+Onboarding UI (Frontend)
+
+Step Architecture
+
+/onboarding         → Step 1: Welcome
+/onboarding/create-team    → Step 2: Create team
+/onboarding/invite-team    → Step 3: Invite members (skippable)
+/onboarding/connect-calendar → Step 4: Connect Google Calendar
+
+Layout
+
+File: apps/web/src/app/onboarding/layout.tsx
+
+LAYOUT DESIGN:
+  Full-screen white background (no sidebar, no topbar)
+  Top: "vocaply" wordmark left, progress indicator right
+  Center: content (max-width 480px, centered)
+  Bottom: step counter ("Step 2 of 4")
+
+  Progress indicator (top right):
+    4 horizontal bars, left to right
+    Completed steps: solid brand green
+    Current step: green + pulsing
+    Future steps: gray
+    Each bar: 48px wide × 4px tall, gap 6px, border-radius 2px
+
+useOnboarding.ts Hook
+
+File: apps/web/src/features/onboarding/hooks/useOnboarding.ts
+
+typescriptexport function useOnboarding() {
+  const router = useRouter()
+  const { user, setUser } = useAuthStore()
+
+  const createTeam = useMutation({
+    mutationFn: (data: { name: string; slug?: string }) =>
+      apiClient.post('/api/v1/teams', data).then((r) => r.data.data),
+    onSuccess: (team) => {
+      // Update local user state with new teamId
+      setUser({ ...user!, teamId: team.id })
+      router.push('/onboarding/invite-team')
+    },
+  })
+
+  const inviteMembers = useMutation({
+    mutationFn: (emails: string[]) =>
+      apiClient.post('/api/v1/teams/me/invite', { emails, role: 'MEMBER' })
+        .then((r) => r.data.data),
+    onSuccess: () => router.push('/onboarding/connect-calendar'),
+  })
+
+  const skipInvite = () => router.push('/onboarding/connect-calendar')
+
+  const completeOnboarding = useMutation({
+    mutationFn: () =>
+      apiClient.patch('/api/v1/auth/me', { onboardingCompleted: true }).then((r) => r.data.data),
+    onSuccess: () => router.push('/dashboard'),
+  })
+
+  return { createTeam, inviteMembers, skipInvite, completeOnboarding }
+}
+
+Step 1 — Welcome Page
+
+File: apps/web/src/features/onboarding/components/WelcomeStep.tsx
+
+UI DESIGN:
+  Large emoji: 🎉 (48px)
+  Heading: "Welcome to Vocaply" (Instrument Serif, 32px)
+  Subtext: "Let's set up your team in 4 quick steps. It takes under 5 minutes."
+           (DM Sans 16px, muted, max-width 380px)
+  Two bullet points (green ✓):
+    ✓ Bot joins your standups automatically
+    ✓ Every promise tracked — no manual work
+  Button: "Let's get started →" (full-width, primary)
+           → navigates to /onboarding/create-team
+
+Step 2 — Create Team
+
+File: apps/web/src/features/onboarding/components/CreateTeamStep.tsx
+
+UI DESIGN:
+  Heading: "Name your team"
+  Subtext: "This is what your team members will see when they join."
+
+  Form:
+    Team name input:
+      Label: "Team name"
+      Placeholder: "e.g. TechFlow Engineering"
+      autoFocus: true
+      Max length: 100
+
+    Slug input (optional, advanced):
+      Label: "URL slug" (small gray text: "Used in your team URL")
+      Placeholder: "techflow-eng"
+      Below: live preview — "vocaply.com/team/techflow-eng"
+      Auto-fills as user types team name (slugified)
+      Show green ✓ when available, red ✗ when taken (debounced check)
+
+  Submit: "Create team →" (full-width)
+  Error: slug taken → "This slug is taken. Try: techflow-eng-2"
+
+Slug availability check: Debounced (500ms) call to GET /api/v1/teams/check-slug?slug=xxx
+
+Add this endpoint to teams.routes.ts:
+
+typescriptrouter.get('/check-slug', requireAuth, asyncHandler(async (req, res) => {
+  const { slug } = req.query as { slug: string }
+  const existing = await prisma.team.findUnique({ where: { slug: slug.toLowerCase() } })
+  res.json(success({ available: !existing }))
+}))
+
+Step 3 — Invite Team
+
+File: apps/web/src/features/onboarding/components/InviteTeamStep.tsx
+
+UI DESIGN:
+  Heading: "Invite your team"
+  Subtext: "Add your team members' email addresses. You can always invite more later."
+
+  Email input area:
+    Input: type="email", placeholder "colleague@company.com"
+    "Add" button next to input (or press Enter)
+    Below input: chips/tags of added emails
+    Each chip: email text + × remove button
+    Chip design: bg-accent-light, border-accent/20, brand text, 13px, pill shape
+
+  State: emails[] in component state
+  Max: 10 emails at a time
+
+  Actions (bottom):
+    Primary: "Send invites →" (disabled if emails[] empty)
+    Secondary: "Skip for now" (small, ghost, navigates to step 4)
+
+  After submit:
+    Brief success toast: "X invitations sent!"
+    Navigate to step 4
+
+Step 4 — Connect Calendar
+
+File: apps/web/src/features/onboarding/components/ConnectCalendarStep.tsx
+
+UI DESIGN:
+  Heading: "Connect your calendar"
+  Subtext: "Vocaply scans your calendar to automatically schedule the bot for meetings."
+
+  Google Calendar card:
+    White card, border, border-radius lg
+    Left: Google Calendar icon (32px)
+    Center: "Google Calendar" (bold) + "Zoom, Meet, Teams links detected automatically"
+    Right: "Connect" button (outline, brand color)
+    Click → redirect to /api/auth/google-calendar (OAuth)
+
+  Outlook card (coming soon):
+    Same layout but grayed out
+    Right: "Coming soon" badge (muted)
+
+  Bottom:
+    "Skip — I'll connect later" link (small, muted)
+    → Calls completeOnboarding() → /dashboard
+
+  After Google connects:
+    Card shows: green ✓ + "Connected" badge
+    "Google Calendar" text + "Syncing upcoming meetings..."
+    Button changes to "Continue →" → completeOnboarding()
+
+Google Calendar OAuth endpoint (scaffold):
+
+typescript// services/api/src/modules/auth/auth.routes.ts (add to existing)
+router.get('/google-calendar', requireAuth, asyncHandler(async (req, res) => {
+  const state = crypto.randomBytes(32).toString('hex')
+  await redis.setex(`oauth:state:calendar:${state}`, 600, req.user.id)
+
+  const params = new URLSearchParams({
+    client_id:     process.env.GOOGLE_CLIENT_ID!,
+    redirect_uri:  `${process.env.API_URL}/auth/google-calendar/callback`,
+    response_type: 'code',
+    scope:         'https://www.googleapis.com/auth/calendar.readonly',
+    state,
+    access_type:   'offline',
+    prompt:        'consent',
+  })
+  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`)
+}))
+
+router.get('/google-calendar/callback', asyncHandler(async (req, res) => {
+  // Full implementation: Day 56 (Calendar Sync)
+  // Today: just store tokens and redirect to onboarding success
+  res.redirect(`${process.env.FRONTEND_URL}/onboarding/connect-calendar?connected=true`)
+}))
+
+
+Files to Create Today
+
+Backend:
+
+services/api/src/modules/action-items/action-items.repository.ts
+services/api/src/modules/action-items/action-items.service.ts
+services/api/src/modules/action-items/action-items.controller.ts
+services/api/src/modules/action-items/action-items.validator.ts
+services/api/src/modules/action-items/action-items.routes.ts
+services/api/src/modules/action-items/action-items.types.ts
+services/api/src/queues/workers/notify.worker.ts    ← FILLED IN
+services/api/src/queues/workers/integrate.worker.ts ← scaffold only
+
+Frontend:
+
+apps/web/src/features/onboarding/hooks/useOnboarding.ts
+apps/web/src/features/onboarding/components/OnboardingProgress.tsx
+apps/web/src/features/onboarding/components/WelcomeStep.tsx
+apps/web/src/features/onboarding/components/CreateTeamStep.tsx
+apps/web/src/features/onboarding/components/InviteTeamStep.tsx
+apps/web/src/features/onboarding/components/ConnectCalendarStep.tsx
+apps/web/src/features/onboarding/index.ts
+apps/web/src/app/onboarding/layout.tsx          ← Full progress bar layout
+apps/web/src/app/onboarding/page.tsx             ← Step 1
+apps/web/src/app/onboarding/create-team/page.tsx
+apps/web/src/app/onboarding/invite-team/page.tsx
+apps/web/src/app/onboarding/connect-calendar/page.tsx
+
+Updated:
+
+services/api/src/app.ts   ← Register teams + meetings + commitments + action-items + webhooks routes
+services/api/src/server.ts ← Start scheduler + all workers
+
+
+Day 20 End-of-Day Checklist
+
+ACTION ITEMS API:
+  [ ] GET /action-items → paginated list
+  [ ] ?completed=false filter works
+  [ ] ?priority[in]=HIGH,URGENT multi-value filter works
+  [ ] ?assigneeId=usr_01 filter works
+  [ ] PATCH /action-items/:id → updates fields + completedAt when completed=true
+  [ ] POST /action-items/:id/sync → queues integrate job
+  [ ] Jira integration not connected → 422 with helpful message
+
+NOTIFY WORKER:
+  [ ] Worker picks up COMMITMENT_MISSED job
+  [ ] Email sent to owner (check Resend dashboard)
+  [ ] Email sent to managers
+  [ ] DEADLINE_REMINDER job → email sent
+  [ ] Dedup: same notification within 1 hour → skipped
+
+ONBOARDING UI:
+  [ ] /onboarding → welcome step renders
+  [ ] /onboarding/create-team → form renders with live slug preview
+  [ ] Slug availability check debounced (wait 500ms after typing)
+  [ ] Slug taken → red indicator
+  [ ] Slug available → green ✓
+  [ ] Create team → API call → redirects to invite step
+  [ ] /onboarding/invite-team → email chips UI works
+  [ ] Add email → chip appears
+  [ ] Remove chip → email removed from list
+  [ ] "Send invites" → invitations sent → step 4
+  [ ] "Skip for now" → step 4
+  [ ] /onboarding/connect-calendar → both cards render
+  [ ] Google Connect → redirects to Google OAuth
+  [ ] "Skip" → /dashboard
+  [ ] Progress bar shows correct step on each page
+
+FULL FLOW:
+  [ ] Register → verify email → /onboarding → create team → invite → skip calendar → /dashboard
+  [ ] User.teamId set after create team (check Zustand store)
+  [ ] Dashboard placeholder shows username
