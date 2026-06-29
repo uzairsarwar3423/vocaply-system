@@ -70,4 +70,14 @@ export const REALTIME_EVENT_MAP = {
     patches: ["auth.me"],
     effect: "refresh-permissions-self",
   },
+
+  // Notifications — Day 43 (settings matrix and topbar bell updates)
+  "notification:created": {
+    owner: "useInAppNotifications",
+    patches: ["notifications.inApp", "notifications.unreadCount"],
+  },
+  "notification:read": {
+    owner: "useInAppNotifications",
+    patches: ["notifications.inApp", "notifications.unreadCount"],
+  },
 } as const satisfies Record<string, RealtimeEventEntry>;

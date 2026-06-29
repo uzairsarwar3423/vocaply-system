@@ -84,6 +84,15 @@ export const authController = {
   }),
 
   /**
+   * Endpoint: GET /auth/google-calendar/check-config
+   */
+  googleCalendarCheckConfig: asyncHandler(async (req, res) => {
+    const { env } = await import('../../config/env')
+    const configured = !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET)
+    res.status(200).json(success({ configured }))
+  }),
+
+  /**
    * Endpoint: GET /auth/google-calendar/callback
    */
   googleCalendarCallback: asyncHandler(async (req, res) => {

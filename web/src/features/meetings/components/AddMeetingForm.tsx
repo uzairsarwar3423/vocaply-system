@@ -14,6 +14,7 @@ import { PlanLimitBanner } from "./PlanLimitBanner";
 import { useCreateMeeting } from "../hooks/useCreateMeeting";
 import { detectPlatformAndId } from "../hooks/usePlatformDetect";
 import { cn } from "@/lib/utils";
+import { format } from "date-fns";
 
 const addMeetingSchema = z
   .object({
@@ -78,8 +79,18 @@ export function AddMeetingForm({ onSuccess, onPlanLimitHit, onCancel }: AddMeeti
       title: "",
       platform: "MANUAL",
       meetingUrl: "",
-      scheduledDate: "",
-      scheduledTime: "",
+      scheduledDate: format(new Date(), "yyyy-MM-dd"),
+      scheduledTime: (() => {
+        const now = new Date();
+        const minutes = now.getMinutes();
+        const nextHalfHour = new Date(now);
+        if (minutes < 30) {
+          nextHalfHour.setMinutes(30, 0, 0);
+        } else {
+          nextHalfHour.setHours(now.getHours() + 1, 0, 0, 0);
+        }
+        return format(nextHalfHour, "HH:mm");
+      })(),
     },
   });
 

@@ -85,6 +85,11 @@ router.get('/google/callback', authController.googleCallback)
 router.get('/google-calendar', requireAuth, authController.googleCalendarInit)
 
 /**
+ * Route: GET /api/v1/auth/google-calendar/check-config
+ */
+router.get('/google-calendar/check-config', requireAuth, authController.googleCalendarCheckConfig)
+
+/**
  * Route: GET /api/v1/auth/google-calendar/callback
  */
 router.get('/google-calendar/callback', authController.googleCalendarCallback)

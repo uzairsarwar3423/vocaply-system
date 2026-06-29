@@ -113,11 +113,10 @@
    TAILWIND v4 @theme configuration
    ============================================================ */
 @theme {
-  /* Fonts */
-  --font-sans: var(--font-inter), system-ui, -apple-system, sans-serif;
-  --font-heading: var(--font-jakarta), var(--font-inter), system-ui, -apple-system, sans-serif;
+  --font-sans: var(--font-dm-sans), system-ui, -apple-system, sans-serif;
+  --font-heading: var(--font-plus-jakarta), system-ui, -apple-system, sans-serif;
   --font-mono: var(--font-mono), ui-monospace, monospace;
-  --font-serif: var(--font-serif), Georgia, serif;
+  --font-serif: var(--font-instrument-serif), Georgia, serif;
   --font-plus-jakarta: var(--font-plus-jakarta), system-ui, -apple-system, sans-serif;
 
   /* Colors mapping so Tailwind v4 registers them */
@@ -298,6 +297,20 @@ select:focus {
   font-family: var(--font-plus-jakarta), var(--font-inter), system-ui, -apple-system, sans-serif !important;
 }
 
+.onboarding-theme {
+  --font-sans: var(--font-inter), system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans);
+}
+
+.onboarding-theme h1,
+.onboarding-theme h2,
+.onboarding-theme h3,
+.onboarding-theme h4,
+.onboarding-theme h5,
+.onboarding-theme h6 {
+  font-family: var(--font-plus-jakarta), var(--font-inter), system-ui, -apple-system, sans-serif !important;
+}
+
 
 /* ── Scrolling Marquee Keyframes & Utilities ──────────────── */
 @keyframes marquee-left {
@@ -333,4 +346,13 @@ select:focus {
 .animate-marquee-left:hover,
 .animate-marquee-right:hover {
   animation-play-state: paused;
+}
+
+/* Utility to hide scrollbars */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
 }

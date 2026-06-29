@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 
 // ── Instrument Serif — headlines, pull quotes ────────────────
 const instrumentSerif = Instrument_Serif({
-  variable: "--font-serif",
+  variable: "--font-instrument-serif",
   subsets: ["latin"],
   weight: "400",
   style: ["normal", "italic"],
@@ -16,7 +16,7 @@ const instrumentSerif = Instrument_Serif({
 
 // ── DM Sans — body text, UI, nav, labels ─────────────────────
 const dmSans = DM_Sans({
-  variable: "--font-sans",
+  variable: "--font-dm-sans",
   subsets: ["latin"],
   weight: ["300", "400", "500", "600"],
   display: "swap",

@@ -18,8 +18,6 @@ import {
   DEFAULT_PREFERENCES,
   type NotificationPreferences,
   type PartialNotificationPreferences,
-  type TestNotificationRequest,
-  type TestNotificationResult,
 } from './notifications.types'
 import { prisma } from '../../db/client'
 import { env } from '../../config/env'
@@ -87,107 +85,79 @@ export const notificationsService = {
     return merged
   },
 
-  /**
-   * Send a test notification to the specified channel.
-   * Uses the SAME underlying send functions as notify.worker (not via queue).
-   * Returns { sent: false, reason } as a 200 for graceful non-error states
-   * (e.g., channel not connected) — never throws for expected UI states.
-   */
-  async sendTestNotification(
-    userId: string,
-    teamId: string,
-    request: TestNotificationRequest
-  ): Promise<TestNotificationResult> {
-    const { channel, type } = request
 
-    // Load user context
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, email: true, name: true },
+  /**
+   * List user's in-app notifications with cursor-based pagination.
+   */
+  async listInApp(userId: string, query: { limit: number; cursor?: string }) {
+    const limit = query.limit
+    const cursor = query.cursor ? { id: query.cursor } : undefined
+
+    const items = await prisma.inAppNotification.findMany({
+      where: { userId },
+      take: limit + 1,
+      ...(cursor && { cursor, skip: 1 }),
+      orderBy: { createdAt: 'desc' },
     })
 
-    if (!user) {
-      return { sent: false, channel, type, reason: 'USER_NOT_FOUND' }
+    let nextCursor: string | undefined = undefined
+    if (items.length > limit) {
+      const nextItem = items.pop()
+      nextCursor = nextItem?.id
     }
 
-    // ── Email channel ──────────────────────────────────────────────────────────
-    if (channel === 'email') {
-      try {
-        if (type === 'MEETING_PROCESSED') {
-          await emailService.sendMeetingSummary({
-            to: user.email,
-            name: user.name,
-            meetingTitle: 'Sample Team Meeting (Test)',
-            summary: 'This is a test notification from Vocaply. Your actual meeting summary will appear here.',
-            commitmentsCount: 3,
-            actionItemsCount: 2,
-            viewUrl: `${frontendUrl}/meetings`,
-          })
-        } else if (type === 'COMMITMENT_MISSED') {
-          await emailService.sendCommitmentMissed({
-            to: user.email,
-            name: user.name,
-            commitmentText: 'Complete the Q2 report (Test Commitment)',
-            dueDate: new Date(),
-            actionUrl: `${frontendUrl}/commitments`,
-          })
-        } else if (type === 'DEADLINE_REMINDER' || type === 'DEADLINE_TODAY') {
-          await emailService.sendDeadlineReminder({
-            to: user.email,
-            name: user.name,
-            commitments: [
-              { id: 'test-1', text: 'Review team performance metrics (Test)', dueDate: new Date() },
-            ],
-            actionUrl: `${frontendUrl}/commitments`,
-          })
-        } else if (type === 'MANAGER_ALERT') {
-          await emailService.sendManagerAlert({
-            to: user.email,
-            name: user.name,
-            assigneeName: 'Team Member (Test)',
-            commitmentText: 'Submit weekly progress update (Test)',
-            dueDate: new Date(),
-            actionUrl: `${frontendUrl}/dashboard`,
-          })
-        } else {
-          // Fallback: send meeting summary as a generic test
-          await emailService.sendMeetingSummary({
-            to: user.email,
-            name: user.name,
-            meetingTitle: `Test Notification — ${type}`,
-            summary: 'This is a test notification from Vocaply.',
-            commitmentsCount: 0,
-            actionItemsCount: 0,
-            viewUrl: `${frontendUrl}/dashboard`,
-          })
-        }
+    return { items, nextCursor }
+  },
 
-        return { sent: true, channel, type, sentAt: new Date().toISOString() }
-      } catch (err) {
-        logger.error({ err, userId, channel, type }, 'notifications.service: test email send failed')
-        return { sent: false, channel, type, reason: 'EMAIL_SEND_FAILED' }
-      }
+  /**
+   * Get total count of unread in-app notifications.
+   */
+  async getUnreadCount(userId: string): Promise<number> {
+    return prisma.inAppNotification.count({
+      where: { userId, isRead: false },
+    })
+  },
+
+  /**
+   * Mark a single in-app notification as read.
+   */
+  async markRead(userId: string, id: string): Promise<void> {
+    const notification = await prisma.inAppNotification.findFirst({
+      where: { id, userId },
+    })
+    if (!notification) return
+
+    await prisma.inAppNotification.update({
+      where: { id },
+      data: { isRead: true, readAt: new Date() },
+    })
+
+    try {
+      const { socketEmitter } = await import('../../realtime/socket.emitter')
+      const { userRoom } = await import('../../realtime/rooms.manager')
+      const { SERVER_EVENTS } = await import('../../realtime/socket.events')
+      socketEmitter.to(userRoom(userId)).emit(SERVER_EVENTS.NOTIFICATION_READ, { id })
+    } catch (err) {
+      logger.error({ err, userId }, 'notifications.service: failed to emit notification:read socket event')
     }
+  },
 
-    // ── Slack channel ──────────────────────────────────────────────────────────
-    if (channel === 'slack') {
-      // Check if Slack integration is connected for this team
-      const slackIntegration = await prisma.teamIntegration.findFirst({
-        where: { teamId, provider: 'SLACK', isActive: true },
-        select: { id: true },
-      })
+  /**
+   * Mark all unread in-app notifications as read for a user.
+   */
+  async markAllRead(userId: string): Promise<void> {
+    await prisma.inAppNotification.updateMany({
+      where: { userId, isRead: false },
+      data: { isRead: true, readAt: new Date() },
+    })
 
-      if (!slackIntegration) {
-        // Graceful non-error state — Slack not connected is expected/common
-        return { sent: false, channel, type, reason: 'SLACK_NOT_CONNECTED' }
-      }
-
-      // Slack DM send would go here — using the same slackNotifyService functions
-      // as notify.worker when that service is available
-      logger.info({ userId, teamId, type }, 'notifications.service: Slack test-send (integration confirmed active)')
-      return { sent: true, channel, type, sentAt: new Date().toISOString() }
+    try {
+      const { socketEmitter } = await import('../../realtime/socket.emitter')
+      const { userRoom } = await import('../../realtime/rooms.manager')
+      const { SERVER_EVENTS } = await import('../../realtime/socket.events')
+      socketEmitter.to(userRoom(userId)).emit(SERVER_EVENTS.NOTIFICATION_READ, { all: true })
+    } catch (err) {
+      logger.error({ err, userId }, 'notifications.service: failed to emit notification:read socket event')
     }
-
-    return { sent: false, channel, type, reason: 'UNSUPPORTED_CHANNEL' }
   },
 }

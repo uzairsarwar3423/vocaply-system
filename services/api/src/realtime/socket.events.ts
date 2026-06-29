@@ -54,6 +54,10 @@ export const SERVER_EVENTS = {
   INTEGRATION_CONNECTED: 'integration:connected',
   INTEGRATION_DISCONNECTED: 'integration:disconnected',
   ACTION_ITEM_SYNCED: 'action_item:synced',
+
+  // Notifications
+  NOTIFICATION_CREATED: 'notification:created',
+  NOTIFICATION_READ: 'notification:read',
 } as const
 
 export type ClientEvent = typeof CLIENT_EVENTS[keyof typeof CLIENT_EVENTS]

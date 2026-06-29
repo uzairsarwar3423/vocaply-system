@@ -10,5 +10,5 @@ export const metadata: Metadata = {
  * Centers content, full-height, light background from design system.
  */
 export default function AuthLayout({ children }: { children: ReactNode }) {
-  return <>{children}</>;
+  return <div className="onboarding-theme">{children}</div>;
 }

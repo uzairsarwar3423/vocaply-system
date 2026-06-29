@@ -31,17 +31,47 @@ export const notificationsController = {
   }),
 
   /**
-   * POST /api/v1/notifications/test
-   * Sends a real test notification via the specified channel.
-   * Returns { sent: false, reason } as 200 for graceful non-error states.
+   * GET /api/v1/notifications/in-app
+   * Returns cursor-paginated in-app notifications for the user.
    */
-  testNotification: asyncHandler(async (req: Request, res: Response, _next: NextFunction) => {
+  listInApp: asyncHandler(async (req: Request, res: Response, _next: NextFunction) => {
     const userId = req.user!.id
-    const teamId = req.user!.teamId!
-    const { channel, type } = req.body
+    const { limit, cursor } = req.query as any
 
-    const result = await notificationsService.sendTestNotification(userId, teamId, { channel, type })
-
+    const result = await notificationsService.listInApp(userId, { limit, cursor })
     return res.json({ data: result })
+  }),
+
+  /**
+   * GET /api/v1/notifications/unread-count
+   * Returns the count of unread in-app notifications.
+   */
+  getUnreadCount: asyncHandler(async (req: Request, res: Response, _next: NextFunction) => {
+    const userId = req.user!.id
+    const count = await notificationsService.getUnreadCount(userId)
+    return res.json({ data: { count } })
+  }),
+
+  /**
+   * PATCH /api/v1/notifications/in-app/:id/read
+   * Marks a single in-app notification as read.
+   */
+  markRead: asyncHandler(async (req: Request, res: Response, _next: NextFunction) => {
+    const userId = req.user!.id
+    const id = req.params.id as string
+
+    await notificationsService.markRead(userId, id)
+    return res.json({ data: { success: true } })
+  }),
+
+  /**
+   * POST /api/v1/notifications/in-app/read-all
+   * Marks all in-app notifications for the user as read.
+   */
+  markAllRead: asyncHandler(async (req: Request, res: Response, _next: NextFunction) => {
+    const userId = req.user!.id
+
+    await notificationsService.markAllRead(userId)
+    return res.json({ data: { success: true } })
   }),
 }

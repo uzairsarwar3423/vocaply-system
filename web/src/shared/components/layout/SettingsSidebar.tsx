@@ -7,15 +7,22 @@ import { cn } from '@/lib/cn';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
-const SETTINGS_NAV = [
-  { href: '/settings/profile',       label: 'Profile',       enabled: true },
-  { href: '/settings/team',          label: 'Team',          enabled: true },
-  { href: '/settings/members',       label: 'Members',       enabled: true },
-  { href: '/settings/integrations',  label: 'Integrations',  enabled: true },
-  { href: '/settings/billing',       label: 'Billing',       enabled: false, comingDay: 42 },
-  { href: '/settings/notifications', label: 'Notifications', enabled: false, comingDay: 43 },
-  { href: '/settings/security',      label: 'Security',      enabled: true },
-] as const;
+interface NavItem {
+  href: string;
+  label: string;
+  enabled: boolean;
+  comingDay?: number;
+}
+
+const SETTINGS_NAV: readonly NavItem[] = [
+  { href: '/settings/profile', label: 'Profile', enabled: true },
+  { href: '/settings/team', label: 'Team', enabled: true },
+  { href: '/settings/members', label: 'Members', enabled: true },
+  { href: '/settings/integrations', label: 'Integrations', enabled: true },
+  { href: '/settings/billing', label: 'Billing', enabled: true },
+  { href: '/settings/notifications', label: 'Notifications', enabled: true },
+  { href: '/settings/security', label: 'Security', enabled: true },
+];
 
 export function SettingsSidebar() {
   const pathname = usePathname();

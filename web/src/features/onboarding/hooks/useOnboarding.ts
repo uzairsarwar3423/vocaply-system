@@ -21,11 +21,11 @@ export const useOnboarding = () => {
 
   // 1. Check if slug is available
   const checkSlugMutation = useMutation({
-    mutationFn: async (slug: string): Promise<boolean> => {
-      const response = await api.get<{ data: { available: boolean } }>(`/teams/check-slug`, {
+    mutationFn: async (slug: string): Promise<{ available: boolean; slug: string; suggestion?: string }> => {
+      const response = await api.get<{ data: { available: boolean; slug: string; suggestion?: string } }>(`/teams/check-slug`, {
         params: { slug }
       })
-      return response.data.data.available
+      return response.data.data
     }
   })
 
@@ -49,9 +49,9 @@ export const useOnboarding = () => {
         })
       }
       queryClient.invalidateQueries({ queryKey: ['auth', 'me'] })
-      router.push('/onboarding/invite-team')
     },
     onError: (err: any) => {
+      if (err.response?.data?.error?.code === 'DUPLICATE') return
       const errMsg = err.response?.data?.error?.message || 'Failed to create team. Please try again.'
       toast.error(errMsg)
     }
@@ -74,9 +74,9 @@ export const useOnboarding = () => {
         })
       }
       queryClient.invalidateQueries({ queryKey: ['auth', 'me'] })
-      router.push('/onboarding/invite-team')
     },
     onError: (err: any) => {
+      if (err.response?.data?.error?.code === 'DUPLICATE') return
       const errMsg = err.response?.data?.error?.message || 'Failed to update team. Please try again.'
       toast.error(errMsg)
     }
@@ -90,7 +90,6 @@ export const useOnboarding = () => {
     },
     onSuccess: () => {
       toast.success('Invitations sent successfully!')
-      router.push('/onboarding/connect-calendar')
     },
     onError: (err: any) => {
       const errMsg = err.response?.data?.error?.message || 'Failed to send invites. Please try again.'
@@ -115,7 +114,6 @@ export const useOnboarding = () => {
         })
       }
       queryClient.invalidateQueries({ queryKey: ['auth', 'me'] })
-      router.push('/dashboard')
     },
     onError: (err: any) => {
       const errMsg = err.response?.data?.error?.message || 'Failed to complete onboarding. Please try again.'
@@ -126,13 +124,13 @@ export const useOnboarding = () => {
   return {
     checkSlug: checkSlugMutation.mutateAsync,
     isCheckingSlug: checkSlugMutation.isPending,
-    createTeam: createTeamMutation.mutate,
+    createTeam: createTeamMutation.mutateAsync,
     isCreatingTeam: createTeamMutation.isPending,
-    updateTeam: updateTeamMutation.mutate,
+    updateTeam: updateTeamMutation.mutateAsync,
     isUpdatingTeam: updateTeamMutation.isPending,
-    inviteMembers: inviteMembersMutation.mutate,
+    inviteMembers: inviteMembersMutation.mutateAsync,
     isInviting: inviteMembersMutation.isPending,
-    completeOnboarding: completeOnboardingMutation.mutate,
+    completeOnboarding: completeOnboardingMutation.mutateAsync,
     isCompleting: completeOnboardingMutation.isPending
   }
 }

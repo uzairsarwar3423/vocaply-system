@@ -51,18 +51,15 @@ export const updatePreferencesSchema = z
 
 export type UpdatePreferencesInput = z.infer<typeof updatePreferencesSchema>
 
-// ── Test Notification Schema ───────────────────────────────────────────────────
+// ── List In-App Notifications Schema ──────────────────────────────────────────
 
-export const testNotificationSchema = z.object({
-  channel: z.enum(['email', 'slack']),
-  type: z.enum([
-    'MEETING_PROCESSED',
-    'COMMITMENT_MISSED',
-    'DEADLINE_REMINDER',
-    'DEADLINE_TODAY',
-    'MANAGER_ALERT',
-    'WEEKLY_DIGEST',
-  ]),
+export const listInAppNotificationsSchema = z.object({
+  limit: z
+    .string()
+    .optional()
+    .transform((val) => (val ? parseInt(val, 10) : 10)),
+  cursor: z.string().optional(),
 })
 
-export type TestNotificationInput = z.infer<typeof testNotificationSchema>
+export type ListInAppNotificationsInput = z.infer<typeof listInAppNotificationsSchema>
+

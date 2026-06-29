@@ -1,192 +1,135 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import { useOnboarding } from "@/features/onboarding/hooks/useOnboarding";
-import { useAuth } from "@/features/auth/hooks/useAuth";
-import { Globe, Users, Loader2, Check, AlertCircle } from "lucide-react";
+import React, { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCreateTeamStep } from "@/features/onboarding/hooks/useCreateTeamStep";
+import { OnboardingStepShell } from "@/features/onboarding/components/OnboardingStepShell";
+import { OnboardingStepFooter } from "@/features/onboarding/components/OnboardingStepFooter";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import Link from "next/link";
+import { AlertCircle } from "lucide-react";
 
 export default function CreateTeamPage() {
-  const { createTeam, isCreatingTeam, updateTeam, isUpdatingTeam, checkSlug, isCheckingSlug } = useOnboarding();
-  const { user } = useAuth();
+  const router = useRouter();
+  const [isExiting, setIsExiting] = useState(false);
 
-  const [name, setName] = useState(user?.team?.name || "");
-  const [slug, setSlug] = useState("");
-  const [slugStatus, setSlugStatus] = useState<"idle" | "checking" | "available" | "unavailable" | "invalid">("idle");
-  const [error, setError] = useState("");
-
-  const hasTeam = !!user?.teamId;
-
-  // Helper: Format slug from team name automatically
-  const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value;
-    setName(val);
-    if (slugStatus === "idle" || slug === "") {
-      const generatedSlug = val
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "");
-      setSlug(generatedSlug);
-    }
-  };
-
-  // Debounced check for slug availability
-  useEffect(() => {
-    if (!slug) {
-      setSlugStatus("idle");
-      return;
-    }
-
-    // Validate slug regex: lowercase alphanumeric and hyphens, no leading/trailing hyphen
-    const SLUG_REGEX = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
-    if (!SLUG_REGEX.test(slug)) {
-      setSlugStatus("invalid");
-      return;
-    }
-
-    setSlugStatus("checking");
-    const delayDebounce = setTimeout(async () => {
-      try {
-        const available = await checkSlug(slug);
-        setSlugStatus(available ? "available" : "unavailable");
-      } catch (err) {
-        setSlugStatus("idle");
-      }
-    }, 500);
-
-    return () => clearTimeout(delayDebounce);
-  }, [slug, checkSlug]);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-
-    if (!name.trim()) {
-      setError("Team name is required");
-      return;
-    }
-
-    if (hasTeam) {
-      if (slugStatus !== "idle" && slugStatus !== "available") {
-        setError("Please choose an available and valid URL slug");
-        return;
-      }
-      updateTeam({ name: name.trim(), ...(slug && slugStatus === 'available' ? { slug: slug.trim() } : {}) });
-    } else {
-      if (slugStatus !== "available") {
-        setError("Please choose an available and valid URL slug");
-        return;
-      }
-      createTeam({ name: name.trim(), slug: slug.trim() });
-    }
-  };
-
-  const isSubmitting = isCreatingTeam || isUpdatingTeam;
+  const {
+    name,
+    setName,
+    slug,
+    setSlug,
+    slugStatus,
+    suggestion,
+    error,
+    isSubmitting,
+    isCheckingSlug,
+    hasTeam,
+    acceptSuggestion,
+    handleSubmit,
+  } = useCreateTeamStep(() => {
+    setIsExiting(true);
+    setTimeout(() => {
+      router.push("/onboarding/invite-team");
+    }, 100);
+  });
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-300">
-      <div className="space-y-2 text-center md:text-left">
-        <div className="mx-auto md:mx-0 h-10 w-10 rounded-xl bg-brand/10 text-brand flex items-center justify-center mb-2">
-          <Users className="h-5 w-5" />
-        </div>
-        <h1 className="text-2xl onboarding-heading font-bold text-foreground">
-          {hasTeam ? "Update your team workspace" : "Create your team workspace"}
-        </h1>
-        <p className="text-sm text-muted">
-          Your workspace URL is where your team will log in and access shared meeting recordings and summaries.
-        </p>
-      </div>
-
-      <form onSubmit={handleSubmit} className="space-y-5">
+    <OnboardingStepShell
+      title={hasTeam ? "Update team workspace" : "Create team workspace"}
+      description="Your workspace URL is where your team will log in and access shared meeting recordings and summaries."
+      isExiting={isExiting}
+    >
+      <form onSubmit={handleSubmit} className="space-y-6">
         {error && (
-          <div className="p-3.5 rounded-xl bg-error-subtle border border-error/20 text-xs text-error flex items-center gap-2">
-            <AlertCircle className="h-4 w-4 shrink-0" />
+          <div
+            role="alert"
+            className="flex items-center gap-2 text-xs font-medium text-foreground bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg p-3 select-none"
+          >
+            <AlertCircle className="h-4 w-4 shrink-0 text-foreground" />
             <span>{error}</span>
           </div>
         )}
 
-        <div className="space-y-1.5">
-          <label htmlFor="team-name" className="text-xs font-semibold uppercase tracking-wider text-muted">
+        <div className="space-y-1">
+          <label htmlFor="team-name" className="text-xs font-semibold text-muted uppercase tracking-wider">
             Team Name
           </label>
-          <input
+          <Input
             id="team-name"
             type="text"
             required
             value={name}
-            onChange={handleNameChange}
+            onChange={(e) => setName(e.target.value)}
             placeholder="Acme Corp"
-            className="w-full px-4 py-3 rounded-xl border border-border bg-surface-2/45 text-sm text-foreground placeholder:text-muted/50 outline-none focus:border-brand transition"
+            className="h-10 text-sm font-sans"
+            disabled={isSubmitting}
+            autoFocus
           />
         </div>
 
-        <div className="space-y-1.5">
-          <label htmlFor="team-slug" className="text-xs font-semibold uppercase tracking-wider text-muted">
+        <div className="space-y-1">
+          <label htmlFor="team-slug" className="text-xs font-semibold text-muted uppercase tracking-wider">
             Workspace URL Slug
           </label>
-          <div className="relative flex items-center">
-            <Globe className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted/60 pointer-events-none" />
+          <div className="flex items-center relative">
+            <span className="absolute left-3 text-xs font-mono text-muted-foreground/60 select-none">
+              vocaply.com/teams/
+            </span>
             <input
               id="team-slug"
               type="text"
               required
               value={slug}
-              onChange={(e) => setSlug(e.target.value.toLowerCase().trim())}
+              onChange={(e) => setSlug(e.target.value)}
               placeholder="acme-corp"
-              className="w-full pl-10 pr-10 py-3 rounded-xl border border-border bg-surface-2/45 text-sm text-foreground placeholder:text-muted/50 outline-none focus:border-brand transition font-mono text-xs"
+              className="h-10 w-full rounded-md border border-zinc-200 bg-transparent pl-[118px] pr-3 text-sm font-mono transition-all outline-none placeholder:text-zinc-400 focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:placeholder:text-zinc-500"
+              disabled={isSubmitting}
             />
-
-            {/* Status Indicators */}
-            <div className="absolute right-3">
-              {isCheckingSlug || slugStatus === "checking" ? (
-                <Loader2 className="h-4 w-4 animate-spin text-brand" />
-              ) : slugStatus === "available" ? (
-                <Check className="h-4 w-4 text-brand font-bold" />
-              ) : slugStatus === "unavailable" || slugStatus === "invalid" ? (
-                <AlertCircle className="h-4 w-4 text-error" />
-              ) : null}
-            </div>
           </div>
 
-          {/* Validation Feedback */}
-          {slugStatus === "available" && (
-            <p className="text-[11px] text-brand font-medium"> vocaply.com/teams/{slug} is available!</p>
-          )}
-          {slugStatus === "unavailable" && (
-            <p className="text-[11px] text-error font-medium"> This URL is already taken.</p>
-          )}
-          {slugStatus === "invalid" && (
-            <p className="text-[11px] text-error font-medium"> URL must be alphanumeric with hyphens only.</p>
-          )}
+          {/* Advisory Checks (Text-Only Status Indicators) */}
+          <div className="min-h-5 pt-1.5 flex items-center select-none text-[11px] font-sans font-medium text-muted-foreground/80 leading-relaxed">
+            {slugStatus === "checking" && (
+              <span>Checking URL availability…</span>
+            )}
+            {slugStatus === "available" && (
+              <span>URL is available</span>
+            )}
+            {slugStatus === "taken" && (
+              <div className="flex items-center gap-1">
+                <span>URL is taken. Try </span>
+                <button
+                  type="button"
+                  onClick={() => suggestion && acceptSuggestion(suggestion)}
+                  className="underline text-foreground hover:text-foreground font-semibold"
+                >
+                  {suggestion}
+                </button>
+              </div>
+            )}
+            {slugStatus === "invalid" && (
+              <span>URL must be alphanumeric with hyphens only</span>
+            )}
+          </div>
         </div>
 
-        <div className="flex flex-col gap-3 pt-2">
-          <button
-            type="submit"
-            disabled={isSubmitting || (!hasTeam && slugStatus !== "available")}
-            className={`w-full flex items-center justify-center gap-2 rounded-xl py-3.5 text-sm font-semibold text-white transition-all duration-200 ${isSubmitting || (!hasTeam && slugStatus !== "available")
-                ? "bg-brand/40 cursor-not-allowed"
-                : "bg-brand hover:bg-brand-mid hover:shadow-brand active:scale-[0.98]"
-              }`}
-          >
-            {isSubmitting ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span>{hasTeam ? "Updating Workspace..." : "Creating Workspace..."}</span>
-              </>
-            ) : (
-              <span>{hasTeam ? "Update & Continue" : "Create & Continue"}</span>
-            )}
-          </button>
-
+        <OnboardingStepFooter>
           <Link
             href="/onboarding"
-            className="w-full py-3.5 text-center text-xs font-semibold text-muted hover:text-foreground hover:underline transition duration-150"
+            className="text-xs font-sans text-muted-foreground hover:text-foreground hover:underline font-medium h-9 flex items-center"
           >
-            Back to previous step
+            Back
           </Link>
-        </div>
+          <Button
+            type="submit"
+            disabled={isSubmitting || slugStatus === "checking" || slugStatus === "invalid" || (!hasTeam && slugStatus !== "available")}
+            className="h-10 px-5 text-xs font-medium min-w-[120px]"
+          >
+            {isSubmitting ? "Saving…" : "Continue →"}
+          </Button>
+        </OnboardingStepFooter>
       </form>
-    </div>
+    </OnboardingStepShell>
   );
 }

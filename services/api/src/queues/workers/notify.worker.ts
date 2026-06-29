@@ -2,10 +2,23 @@ import { Worker, Job } from 'bullmq'
 import { logger } from '../../config/logger'
 import { NotifyJobData } from '../jobs/notify.job'
 import { prisma } from '../../db/client'
+import { NotificationType } from '@prisma/client'
 import { emailService } from '../../modules/notifications/email.service'
 import { env } from '../../config/env'
+import { socketEmitter } from '../../realtime/socket.emitter'
+import { userRoom } from '../../realtime/rooms.manager'
+import { SERVER_EVENTS } from '../../realtime/socket.events'
 
 const frontendUrl = env.FRONTEND_URL || 'http://localhost:3000'
+
+const NOTIFICATION_TYPE_TO_PREF_KEY: Record<string, string> = {
+  MEETING_PROCESSED: 'meetingSummary',
+  COMMITMENT_MISSED: 'commitmentMissed',
+  DEADLINE_REMINDER: 'deadlineReminder',
+  DEADLINE_TODAY: 'deadlineReminder',
+  MANAGER_ALERT: 'commitmentMissed',
+  WEEKLY_DIGEST: 'weeklyDigest',
+}
 
 async function shouldSendEmail(userId: string, notificationType: string): Promise<boolean> {
   const pref = await prisma.notificationPreference.findUnique({
@@ -13,10 +26,30 @@ async function shouldSendEmail(userId: string, notificationType: string): Promis
   })
   if (!pref || !pref.preferences) return true // Default: send email
   const userPrefs = pref.preferences as any
-  if (userPrefs.email && userPrefs.email[notificationType] === false) {
+  const prefKey = NOTIFICATION_TYPE_TO_PREF_KEY[notificationType]
+  if (prefKey && userPrefs.email && userPrefs.email[prefKey] === false) {
     return false
   }
   return true
+}
+
+async function createInAppNotification(data: {
+  userId: string
+  teamId: string
+  type: NotificationType
+  title: string
+  body?: string
+  meetingId?: string
+  commitmentId?: string
+  actionUrl?: string
+}) {
+  const notification = await prisma.inAppNotification.create({ data })
+  try {
+    socketEmitter.to(userRoom(data.userId)).emit(SERVER_EVENTS.NOTIFICATION_CREATED, notification)
+  } catch (err) {
+    logger.error({ err, userId: data.userId }, 'notify.worker: failed to emit notification:created socket event')
+  }
+  return notification
 }
 
 export const notifyWorker = new Worker<NotifyJobData>(
@@ -44,16 +77,14 @@ export const notifyWorker = new Worker<NotifyJobData>(
 
       for (const member of members) {
         // Create In-App Notification
-        await prisma.inAppNotification.create({
-          data: {
-            userId: member.id,
-            teamId,
-            type: 'MEETING_PROCESSED',
-            title: `Meeting processed: ${meeting.title}`,
-            body: meeting.summary ? meeting.summary.substring(0, 150) + '...' : 'Meeting summary is ready.',
-            meetingId: meeting.id,
-            actionUrl: `/meetings/${meeting.id}`
-          }
+        await createInAppNotification({
+          userId: member.id,
+          teamId,
+          type: 'MEETING_PROCESSED',
+          title: `Meeting processed: ${meeting.title}`,
+          body: meeting.summary ? meeting.summary.substring(0, 150) + '...' : 'Meeting summary is ready.',
+          meetingId: meeting.id,
+          actionUrl: `/meetings/${meeting.id}`
         })
 
         // Check user email preferences
@@ -92,16 +123,14 @@ export const notifyWorker = new Worker<NotifyJobData>(
       const { owner } = commitment
 
       // 1. Notify Assignee / Owner
-      await prisma.inAppNotification.create({
-        data: {
-          userId: owner.id,
-          teamId,
-          type: 'COMMITMENT_MISSED',
-          title: '⚠️ Commitment Overdue',
-          body: `You missed the deadline for: "${commitment.text}"`,
-          commitmentId: commitment.id,
-          actionUrl: `/commitments`
-        }
+      await createInAppNotification({
+        userId: owner.id,
+        teamId,
+        type: 'COMMITMENT_MISSED',
+        title: '⚠️ Commitment Overdue',
+        body: `You missed the deadline for: "${commitment.text}"`,
+        commitmentId: commitment.id,
+        actionUrl: `/commitments`
       })
 
       const ownerEmailAllowed = await shouldSendEmail(owner.id, 'COMMITMENT_MISSED')
@@ -138,16 +167,14 @@ export const notifyWorker = new Worker<NotifyJobData>(
         const manager = await prisma.user.findUnique({ where: { id: managerId } })
         if (!manager) continue
 
-        await prisma.inAppNotification.create({
-          data: {
-            userId: manager.id,
-            teamId,
-            type: 'COMMITMENT_MISSED',
-            title: `⚠️ Team Overdue Commitment: ${owner.name}`,
-            body: `${owner.name} missed the deadline for: "${commitment.text}"`,
-            commitmentId: commitment.id,
-            actionUrl: `/dashboard`
-          }
+        await createInAppNotification({
+          userId: manager.id,
+          teamId,
+          type: 'COMMITMENT_MISSED',
+          title: `⚠️ Team Overdue Commitment: ${owner.name}`,
+          body: `${owner.name} missed the deadline for: "${commitment.text}"`,
+          commitmentId: commitment.id,
+          actionUrl: `/dashboard`
         })
 
         const mgrEmailAllowed = await shouldSendEmail(manager.id, 'COMMITMENT_MISSED')
@@ -198,15 +225,13 @@ export const notifyWorker = new Worker<NotifyJobData>(
 
       if (upcomingCommitments.length > 0) {
         // Create In-App Notification
-        await prisma.inAppNotification.create({
-          data: {
-            userId: ownerId,
-            teamId,
-            type: 'DEADLINE_TODAY',
-            title: `⏰ ${upcomingCommitments.length} Commitments Due Soon`,
-            body: `You have ${upcomingCommitments.length} commitments coming due today or tomorrow.`,
-            actionUrl: `/commitments`
-          }
+        await createInAppNotification({
+          userId: ownerId,
+          teamId,
+          type: 'DEADLINE_TODAY',
+          title: `⏰ ${upcomingCommitments.length} Commitments Due Soon`,
+          body: `You have ${upcomingCommitments.length} commitments coming due today or tomorrow.`,
+          actionUrl: `/commitments`
         })
 
         const emailAllowed = await shouldSendEmail(ownerId, 'DEADLINE_TODAY')
