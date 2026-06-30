@@ -1,0 +1,25 @@
+# Inherits all production deps
+-r requirements.txt
+
+# ─── Testing ──────────────────────────────────────────────────────────────────
+pytest>=8.3.0,<9.0.0
+pytest-asyncio>=0.24.0,<1.0.0
+pytest-mock>=3.14.0,<4.0.0
+pytest-cov>=6.0.0,<7.0.0
+
+# httpx is the recommended ASGI test transport for FastAPI (no real HTTP needed)
+# Already in requirements.txt as production dep — listed explicitly here for clarity
+
+# ─── Mock Backends ────────────────────────────────────────────────────────────
+fakeredis[aioredis]>=2.26.0,<3.0.0   # In-memory Redis for tests, no real Redis needed
+mongomock-motor>=0.0.34               # Motor-compatible in-memory MongoDB
+
+# ─── Linting / Formatting / Type-checking ─────────────────────────────────────
+ruff>=0.8.0,<1.0.0
+mypy>=1.13.0,<2.0.0
+black>=24.10.0,<25.0.0
+pre-commit>=4.0.0,<5.0.0
+
+# ─── Additional dev ergonomics ────────────────────────────────────────────────
+ipython>=8.30.0                       # REPL for exploratory SDK calls
+python-dotenv>=1.0.0                  # Local .env loading for manual smoke tests

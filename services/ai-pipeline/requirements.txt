@@ -1,0 +1,25 @@
+# ─── Web Framework ────────────────────────────────────────────────────────────
+fastapi>=0.115.0,<1.0.0
+uvicorn[standard]>=0.32.0,<1.0.0
+
+# ─── Validation / Settings ────────────────────────────────────────────────────
+pydantic>=2.9.0,<3.0.0
+pydantic-settings>=2.6.0,<3.0.0
+
+# ─── AI Provider — OpenRouter (OpenAI-compatible API) ─────────────────────────
+# OpenRouter proxies Gemini, Claude, GPT, etc. through one OpenAI-compatible endpoint.
+# Using the official openai SDK as the transport layer.
+openai>=1.54.0,<2.0.0
+
+# ─── Database Clients ─────────────────────────────────────────────────────────
+motor>=3.6.0,<4.0.0          # Async MongoDB driver built on PyMongo
+redis[hiredis]>=5.2.0,<6.0.0  # redis.asyncio namespace; hiredis for parser speed
+
+# ─── Observability / Logging ──────────────────────────────────────────────────
+structlog>=24.4.0,<25.0.0
+
+# ─── Retry / Resilience ───────────────────────────────────────────────────────
+tenacity>=9.0.0,<10.0.0
+
+# ─── HTTP (for internal service-to-service calls if ever needed) ───────────────
+httpx>=0.28.0,<1.0.0

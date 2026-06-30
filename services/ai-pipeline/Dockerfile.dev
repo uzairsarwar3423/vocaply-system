@@ -1,0 +1,24 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Vocaply AI Pipeline — Development Dockerfile
+# Hot-reload via uvicorn --reload, dev deps installed
+# ─────────────────────────────────────────────────────────────────────────────
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install both prod + dev dependencies
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements-dev.txt
+
+# Source will be volume-mounted in dev — no COPY needed
+# COPY src/ ./src/
+
+EXPOSE 8001
+
+# --reload watches for file changes (requires src/ volume-mount)
+CMD ["uvicorn", "src.api.main:create_app", "--factory", \
+     "--host", "0.0.0.0", \
+     "--port", "8001", \
+     "--reload", \
+     "--reload-dir", "src"]
