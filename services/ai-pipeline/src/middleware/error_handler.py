@@ -23,10 +23,12 @@ import traceback
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
 from src.config.logging import get_logger, request_id_var
 from src.models.common import ErrorEnvelope
 from src.models.exceptions import AIPipelineError
+from src.services.cleanup.confidence_flagger import TimestampIntegrityError
 
 log = get_logger(__name__)
 
@@ -53,6 +55,53 @@ async def ai_pipeline_error_handler(request: Request, exc: AIPipelineError) -> J
 
     return JSONResponse(
         status_code=exc.http_status,
+        content=envelope.model_dump(),
+    )
+
+
+async def request_validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Log Pydantic validation errors so they appear in the terminal, then return 422."""
+    request_id = request_id_var.get()
+    
+    # Log the exact missing fields so they show in the terminal!
+    log.warning(
+        "request_validation_failed",
+        errors=exc.errors(),
+        path=str(request.url.path),
+    )
+
+    envelope = ErrorEnvelope(
+        error_code="VALIDATION_ERROR",
+        message="The request payload was invalid.",
+        request_id=request_id,
+        details={"errors": exc.errors()},
+    )
+
+    return JSONResponse(
+        status_code=422,
+        content=envelope.model_dump(),
+    )
+
+
+async def timestamp_integrity_error_handler(request: Request, exc: TimestampIntegrityError) -> JSONResponse:
+    """Handle TimestampIntegrityError explicitly."""
+    request_id = request_id_var.get()
+    
+    log.error(
+        "timestamp_integrity_error",
+        violations=[v.model_dump() for v in exc.violations],
+        path=str(request.url.path),
+    )
+    
+    envelope = ErrorEnvelope(
+        error_code="TIMESTAMP_INTEGRITY_ERROR",
+        message="Timestamp integrity validation failed.",
+        request_id=request_id,
+        details={"violations": [v.model_dump() for v in exc.violations]},
+    )
+    
+    return JSONResponse(
+        status_code=500,
         content=envelope.model_dump(),
     )
 

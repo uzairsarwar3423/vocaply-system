@@ -1,0 +1,135 @@
+[
+  {
+    "speaker_tag": "speaker_0",
+    "speaker_email": "ahmed@example.com",
+    "speaker_name": null,
+    "text": "um so good morning everyone let's uh get started with the standup",
+    "start_time": 0.0,
+    "end_time": 3.2,
+    "confidence": 0.91,
+    "words": [
+      {"text": "um", "start_time": 0.0, "end_time": 0.3},
+      {"text": "so", "start_time": 0.3, "end_time": 0.5},
+      {"text": "good", "start_time": 0.5, "end_time": 0.8},
+      {"text": "morning", "start_time": 0.8, "end_time": 1.1},
+      {"text": "everyone", "start_time": 1.1, "end_time": 1.5},
+      {"text": "let's", "start_time": 1.5, "end_time": 1.8},
+      {"text": "uh", "start_time": 1.8, "end_time": 2.0},
+      {"text": "get", "start_time": 2.0, "end_time": 2.2},
+      {"text": "started", "start_time": 2.2, "end_time": 2.6},
+      {"text": "with", "start_time": 2.6, "end_time": 2.8},
+      {"text": "the", "start_time": 2.8, "end_time": 2.9},
+      {"text": "standup", "start_time": 2.9, "end_time": 3.2}
+    ]
+  },
+  {
+    "speaker_tag": "speaker_0",
+    "speaker_email": "ahmed@example.com",
+    "speaker_name": null,
+    "text": "yesterday i was working on the authentication module",
+    "start_time": 3.5,
+    "end_time": 6.1,
+    "confidence": 0.95,
+    "words": []
+  },
+  {
+    "speaker_tag": "speaker_0",
+    "speaker_email": "ahmed@example.com",
+    "speaker_name": null,
+    "text": "we uh finished the jwt token refresh logic",
+    "start_time": 6.3,
+    "end_time": 8.9,
+    "confidence": 0.93,
+    "words": []
+  },
+  {
+    "speaker_tag": "speaker_1",
+    "speaker_email": "sara@example.com",
+    "speaker_name": "Sara Lee",
+    "text": "yeah i can follow up on that actually we need to test the refresh flow with the mobile clients",
+    "start_time": 9.5,
+    "end_time": 14.2,
+    "confidence": 0.88,
+    "words": []
+  },
+  {
+    "speaker_tag": "speaker_1",
+    "speaker_email": "sara@example.com",
+    "speaker_name": "Sara Lee",
+    "text": "um i mean we have three mobile clients so kind of need to make sure all of them are covered",
+    "start_time": 14.6,
+    "end_time": 19.1,
+    "confidence": 0.87,
+    "words": []
+  },
+  {
+    "speaker_tag": "speaker_2",
+    "speaker_email": null,
+    "speaker_name": null,
+    "text": "agreed can we schedule a testing session for thursday",
+    "start_time": 20.0,
+    "end_time": 23.5,
+    "confidence": 0.90,
+    "words": []
+  },
+  {
+    "speaker_tag": "speaker_0",
+    "speaker_email": "ahmed@example.com",
+    "speaker_name": null,
+    "text": "thursday works for me",
+    "start_time": 24.0,
+    "end_time": 25.3,
+    "confidence": 0.96,
+    "words": []
+  },
+  {
+    "speaker_tag": "speaker_0",
+    "speaker_email": "ahmed@example.com",
+    "speaker_name": null,
+    "text": "uh i'll also need to look at the redis session store because sort of it's not being cleared on logout properly",
+    "start_time": 25.6,
+    "end_time": 31.2,
+    "confidence": 0.89,
+    "words": []
+  },
+  {
+    "speaker_tag": "speaker_1",
+    "speaker_email": "sara@example.com",
+    "speaker_name": "Sara Lee",
+    "text": "right right that was flagged last week",
+    "start_time": 32.0,
+    "end_time": 34.1,
+    "confidence": 0.92,
+    "words": []
+  },
+  {
+    "speaker_tag": "speaker_1",
+    "speaker_email": "sara@example.com",
+    "speaker_name": "Sara Lee",
+    "text": "the revenue impact is uh about 2.4 million per quarter if the session bugs cause user churn",
+    "start_time": 34.5,
+    "end_time": 39.8,
+    "confidence": 0.91,
+    "words": []
+  },
+  {
+    "speaker_tag": "speaker_2",
+    "speaker_email": null,
+    "speaker_name": null,
+    "text": "ok so let's make that a p0 blocker for the sprint then not just a nice to have",
+    "start_time": 40.5,
+    "end_time": 45.2,
+    "confidence": 0.94,
+    "words": []
+  },
+  {
+    "speaker_tag": "speaker_0",
+    "speaker_email": "ahmed@example.com",
+    "speaker_name": null,
+    "text": "yeah i'll i'll create a ticket for that today",
+    "start_time": 46.0,
+    "end_time": 48.1,
+    "confidence": 0.93,
+    "words": []
+  }
+]

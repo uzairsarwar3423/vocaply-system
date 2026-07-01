@@ -69,7 +69,9 @@ export function TranscriptViewer({
 
       // 3. Resolve Text
       let text = ""
-      if (typeof turn.text === "string") {
+      if (typeof turn.cleaned_text === "string") {
+        text = turn.cleaned_text
+      } else if (typeof turn.text === "string") {
         text = turn.text
       } else if (Array.isArray(turn.words)) {
         text = turn.words.map((w: any) => w.text).join(" ").trim()

@@ -57,10 +57,11 @@ export function VirtualList<T>({
         {virtualizer.getVirtualItems().map((virtualItem) => (
           <div
             key={virtualItem.key}
+            data-index={virtualItem.index}
+            ref={virtualizer.measureElement}
             className="absolute top-0 left-0 w-full"
             style={{
               transform: `translateY(${virtualItem.start}px)`,
-              height: `${virtualItem.size}px`,
             }}
           >
             {renderItem(items[virtualItem.index], virtualItem.index)}

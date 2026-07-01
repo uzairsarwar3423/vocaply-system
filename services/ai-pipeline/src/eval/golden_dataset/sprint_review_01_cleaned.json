@@ -1,0 +1,5 @@
+{
+  "meeting_id": "sprint_review_01",
+  "participants": ["Alice", "Bob"],
+  "content": "Alice: If the API is ready, I'll integrate it by Friday.\nBob: Ahmed said he'll do X."
+}

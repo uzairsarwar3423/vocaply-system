@@ -267,7 +267,7 @@ class GeminiClient:
                     # cast to type[BaseModel] to surface model_validate_json.
                     schema_cls = cast(Type[BaseModel], response_schema)
                     try:
-                        parsed_data = schema_cls.model_validate_json(raw_text)
+                        parsed_data = cast(T, schema_cls.model_validate_json(raw_text))
                     except ValidationError as ve:
                         parsed_data = await self._corrective_schema_retry(
                             model_name=model_name,
@@ -397,7 +397,7 @@ class GeminiClient:
                 response_schema=response_schema,
             )
             schema_cls = cast(Type[BaseModel], response_schema)
-            return schema_cls.model_validate_json(raw_text)
+            return cast(T, schema_cls.model_validate_json(raw_text))
         except ValidationError as ve2:
             raise GeminiSchemaValidationError(
                 "Structured output failed schema validation after corrective retry",
@@ -608,7 +608,8 @@ class GeminiClient:
                 },
             }
 
-        response = await self._client.chat.completions.create(**kwargs)
+        from openai.types.chat import ChatCompletion
+        response = cast(ChatCompletion, await self._client.chat.completions.create(**kwargs))
 
         raw_text = response.choices[0].message.content or ""
 

@@ -1,0 +1,10 @@
+Meeting: {{meeting_title}}
+Date: {{meeting_date_iso}}
+Participants:
+{{participants}}
+
+--- TRANSCRIPT START ---
+{{transcript_content}}
+--- TRANSCRIPT END ---
+
+Extract all commitments, action items, decisions, and blockers from this transcript. Return only the JSON structure defined in your instructions.

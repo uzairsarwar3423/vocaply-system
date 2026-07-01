@@ -1,0 +1,38 @@
+{
+  "meeting_id": "standup_01",
+  "description": "Monday standup",
+  "expected_commitments": [
+    {
+      "owner_name_contains": "Alice",
+      "confidence_min": 0.8,
+      "text_contains": "finish the login feature"
+    },
+    {
+      "owner_name_contains": "Bob",
+      "confidence_min": 0.5,
+      "text_contains": "look at the database issues"
+    }
+  ],
+  "expected_action_items": [
+    {
+      "assignee_name_contains": "Sarah",
+      "text_contains": "review my PR"
+    },
+    {
+      "assignee_name_contains": "Alice",
+      "text_contains": "finish the login feature"
+    }
+  ],
+  "expected_decisions": [
+    {
+      "text_contains": "shipping Friday"
+    }
+  ],
+  "expected_blockers": [
+    {
+      "text_contains": "Waiting on design assets"
+    }
+  ],
+  "expected_commitment_count": 2,
+  "expected_zero_commitments": false
+}

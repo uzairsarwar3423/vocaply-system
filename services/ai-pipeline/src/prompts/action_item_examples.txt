@@ -1,0 +1,9 @@
+VERSION: 1.0
+
+EXAMPLE 1:
+Transcript snippet: "Sarah, can you please review my PR?"
+Expected Action Item: text="Sarah, can you please review my PR?", assignee_name="Sarah", priority="MEDIUM"
+
+EXAMPLE 2 (Dual extraction):
+Transcript snippet: "I'll take care of updating the release notes."
+Expected Action Item: text="I'll take care of updating the release notes.", assignee_name="Speaker", priority="MEDIUM" (Also extract as a Commitment)

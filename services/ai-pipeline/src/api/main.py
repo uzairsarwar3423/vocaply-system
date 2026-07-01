@@ -40,12 +40,18 @@ from src.config.logging import configure_logging, get_logger
 from src.config.settings import Settings, get_settings
 from src.db.mongo_client import MongoClientWrapper
 from src.db.redis_client import RedisClientWrapper
-from src.middleware.error_handler import ai_pipeline_error_handler, unhandled_exception_handler
+from src.middleware.error_handler import (
+    ai_pipeline_error_handler,
+    unhandled_exception_handler,
+    request_validation_error_handler,
+    timestamp_integrity_error_handler,
+)
+from src.services.cleanup.confidence_flagger import TimestampIntegrityError
 from src.middleware.request_id import RequestIdMiddleware
 from src.middleware.request_logger import RequestLoggerMiddleware
 from src.models.exceptions import AIPipelineError
 from src.services.gemini_client import GeminiClient
-from src.api.routes import health
+from src.api.routes import health, cleanup
 
 log = get_logger(__name__)
 
@@ -168,17 +174,23 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
 
     # ── Exception Handlers ────────────────────────────────────────────────────
     app.add_exception_handler(AIPipelineError, ai_pipeline_error_handler)  # type: ignore[arg-type]
+    
+    from fastapi.exceptions import RequestValidationError
+    app.add_exception_handler(RequestValidationError, request_validation_error_handler)  # type: ignore[arg-type]
+    
+    app.add_exception_handler(TimestampIntegrityError, timestamp_integrity_error_handler)  # type: ignore[arg-type]
+    
     app.add_exception_handler(Exception, unhandled_exception_handler)
 
     # ── Routers ───────────────────────────────────────────────────────────────
     # /health and /ready at root (infra-level, outside any versioned prefix)
     app.include_router(health.router)
 
-    # ── ADDING FUTURE ROUTERS (Day 47+ pattern) ───────────────────────────────
-    # from src.api.routes import cleanup
-    # app.include_router(cleanup.router, prefix="/api/v1", tags=["cleanup"])
-    #
-    # from src.api.routes import extract
-    # app.include_router(extract.router, prefix="/api/v1", tags=["extraction"])
+    # Day 47: Transcript cleanup pipeline (Stage 1 + Stage 2)
+    app.include_router(cleanup.router)
+
+    # ── ADDING FUTURE ROUTERS (Day 48+ pattern) ───────────────────────────────
+    from src.api.routes import extract
+    app.include_router(extract.router, prefix="/api/v1", tags=["extraction"])
 
     return app

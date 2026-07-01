@@ -1,0 +1,5 @@
+{
+  "meeting_id": "standup_01",
+  "participants": ["Alice", "Bob", "Charlie", "David", "Eve"],
+  "content": "Alice: I'll finish the login feature by Thursday.\nBob: I should be able to look at the database issues tomorrow.\nCharlie: Sarah, can you please review my PR?\nDavid: We're shipping Friday.\nEve: Waiting on design assets."
+}

@@ -1,0 +1,14 @@
+{
+  "speaker_0": {
+    "user_id": "usr_ahmed_01",
+    "name": "Ahmed Hassan",
+    "email": "ahmed@example.com",
+    "speaker_tag": "speaker_0"
+  },
+  "speaker_1": {
+    "user_id": "usr_sara_02",
+    "name": "Sara Lee",
+    "email": "sara@example.com",
+    "speaker_tag": "speaker_1"
+  }
+}

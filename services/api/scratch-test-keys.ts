@@ -5,11 +5,11 @@ async function run() {
   const client = new MongoClient(process.env.MONGODB_URL);
   await client.connect();
   const db = client.db('vocaply');
-  const transcript = await db.collection('transcripts').findOne({ "raw_transcript": { $exists: true, $ne: [] } });
+  
+  const transcript = await db.collection('transcripts').findOne({ "raw_transcript": { $exists: true, $ne: [] } }, { sort: { _id: -1 } });
+  
   if (transcript) {
-    console.log(JSON.stringify(transcript.raw_transcript[0], null, 2));
-  } else {
-    console.log('No transcripts found');
+    console.log(JSON.stringify(transcript.normalized_transcript.slice(0, 5), null, 2));
   }
   await client.close();
 }

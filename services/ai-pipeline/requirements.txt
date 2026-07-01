@@ -23,3 +23,6 @@ tenacity>=9.0.0,<10.0.0
 
 # ─── HTTP (for internal service-to-service calls if ever needed) ───────────────
 httpx>=0.28.0,<1.0.0
+
+# ─── NLP / Tokenization ───────────────────────────────────────────────────────
+tiktoken>=0.8.0

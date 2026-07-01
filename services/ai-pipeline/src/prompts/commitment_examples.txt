@@ -1,0 +1,17 @@
+VERSION: 1.0
+
+EXAMPLE 1:
+Transcript snippet: "I'll make sure the login page is done by Tuesday."
+Expected Commitment: text="I'll make sure the login page is done by Tuesday.", confidence=0.95
+
+EXAMPLE 2 (Hedged):
+Transcript snippet: "I should be able to look at the database issues tomorrow."
+Expected Commitment: text="I should be able to look at the database issues tomorrow.", confidence=0.6
+
+EXAMPLE 3 (Anti-pattern - REJECT):
+Transcript snippet: "We really need to get the performance bugs fixed."
+Expected Commitment: None (do not extract, collective action)
+
+EXAMPLE 4 (Anti-pattern - REJECT):
+Transcript snippet: "I was supposed to do that last week."
+Expected Commitment: None (do not extract, past miss)

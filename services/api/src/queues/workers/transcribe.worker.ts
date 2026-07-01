@@ -21,65 +21,67 @@ export const transcribeWorker = new Worker<TranscribeJobData>(
       where: { meetingId },
     })
 
-    const speakerMap: Record<string, { userId?: string; name: string; email?: string }> = {}
-    const nameMap: Record<string, { userId?: string; name: string; email?: string }> = {}
-
+    const participantMap: Record<string, any> = {}
     for (const p of participants) {
-      const info = {
-        userId: p.userId ?? undefined,
-        name:   p.name,
-        email:  p.email ?? undefined,
-      }
       if (p.speakerTag) {
-        speakerMap[p.speakerTag.toLowerCase()] = info
-      }
-      if (p.name) {
-        nameMap[p.name.toLowerCase()] = info
-      }
-      if (p.email) {
-        nameMap[p.email.toLowerCase()] = info
+        participantMap[p.speakerTag] = {
+          user_id: p.userId ?? null,
+          name: p.name || 'Unknown',
+          email: p.email ?? null,
+          speaker_tag: p.speakerTag
+        }
       }
     }
 
-    const enrichedTurns = transcript.raw_transcript.map((turn: any) => {
-      let key = ""
-      if (turn.speaker_tag) {
-        key = turn.speaker_tag
-      } else if (turn.participant?.name) {
-        key = turn.participant.name
-      } else if (turn.speaker_name) {
-        key = turn.speaker_name
-      } else if (typeof turn.speaker === "string") {
-        key = turn.speaker
+    const aiPipelineUrl = process.env.AI_PIPELINE_URL || 'http://localhost:8001'
+    const secret = process.env.INTERNAL_API_SECRET || ''
+
+    // We must lazily import axios because this is a worker environment
+    const axios = (await import('axios')).default
+
+    logger.info({ jobId: job.id, meetingId }, 'transcribe.worker: Calling Python AI Pipeline for cleanup')
+    
+    let cleaned_transcript = transcript.raw_transcript // Fallback
+    let cleanup_metadata = null
+
+    try {
+      const response = await axios.post(`${aiPipelineUrl}/api/v1/transcripts/cleanup`, {
+        meeting_id: meetingId,
+        team_id: teamId,
+        raw_transcript: transcript.raw_transcript,
+        participants: participantMap
+      }, {
+        headers: {
+          'X-Internal-Service-Key': secret
+        }
+      })
+      cleaned_transcript = response.data.cleaned_transcript
+      cleanup_metadata = response.data.metadata
+      logger.info({ jobId: job.id, meetingId }, 'transcribe.worker: Python cleanup successful')
+    } catch (error: any) {
+      const errData = error.response?.data;
+      if (errData?.error_code === 'TIMESTAMP_INTEGRITY_ERROR') {
+        logger.error({ 
+          jobId: job.id, 
+          meetingId, 
+          violations: errData.details?.violations 
+        }, 'transcribe.worker: Timestamp integrity validation failed in Python AI Pipeline. Job must fail.')
+        throw new Error(`Timestamp integrity validation failed: ${JSON.stringify(errData.details?.violations)}`)
       }
 
-      const match = speakerMap[key.toLowerCase()] || nameMap[key.toLowerCase()]
-
-      return {
-        ...turn,
-        speaker_user_id: match?.userId ?? null,
-        speaker_name:    match?.name ?? (key || "Unknown Speaker"),
-        speaker_email:   match?.email ?? null,
-      }
-    })
-
-    const enrichedNormalizedTurns = Array.isArray(transcript.normalized_transcript)
-      ? transcript.normalized_transcript.map((turn: any) => {
-          const key = turn.speaker || ""
-          const match = nameMap[key.toLowerCase()] || speakerMap[key.toLowerCase()]
-          return {
-            ...turn,
-            speaker_user_id: match?.userId ?? null,
-            speaker:         match?.name ?? (key || "Unknown Speaker"),
-            speaker_email:   match?.email ?? null,
-          }
-        })
-      : []
+      logger.error({ 
+        jobId: job.id, 
+        meetingId, 
+        err: errData || error.message 
+      }, 'transcribe.worker: Python cleanup failed, falling back to raw transcript')
+      // If Python fails (for other reasons like rate limits), we gracefully degrade by just skipping cleanup 
+      // and passing the raw transcript downstream as normalized, so extraction can still run.
+    }
 
     await mongoService.updateTranscript(mongoTranscriptId, {
-      raw_transcript:        enrichedTurns,
-      normalized_transcript: enrichedNormalizedTurns,
-      processing_status:     'ready_for_extraction',
+      normalized_transcript: cleaned_transcript, // Store the result in normalized_transcript so the rest of the app works
+      cleanup_metadata: cleanup_metadata,
+      processing_status: 'ready_for_extraction',
     })
 
     await extractQueue.add(

@@ -1,0 +1,16 @@
+{
+  "meeting_id": "sprint_review_01",
+  "description": "Sprint review",
+  "expected_commitments": [
+    {
+      "owner_name_contains": "Alice",
+      "confidence_min": 0.4,
+      "text_contains": "integrate it by Friday"
+    }
+  ],
+  "expected_action_items": [],
+  "expected_decisions": [],
+  "expected_blockers": [],
+  "expected_commitment_count": 1,
+  "expected_zero_commitments": false
+}
